@@ -18,9 +18,15 @@ async function axiosGetWithRetry(url, opts, retries = 2) {
       lastErr = e;
       const code = e?.response?.status;
       const isRetryable =
-        !code || code >= 500 || code === 429 || e.code === "ECONNRESET" || e.code === "ETIMEDOUT";
+        !code ||
+        code >= 500 ||
+        code === 429 ||
+        e?.code === "ECONNRESET" ||
+        e?.code === "ETIMEDOUT" ||
+        e?.code === "ECONNABORTED";
+
       if (!isRetryable || i === retries) throw lastErr;
-      await wait(400 * (i + 1)); // backoff
+      await wait(400 * (i + 1)); // backoff simple
     }
   }
   throw lastErr;
@@ -50,10 +56,14 @@ export default {
     try {
       if (!args || !args.length) {
         cooldowns.delete(from);
-        return sock.sendMessage(from, { text: "🎧 Uso: .ytmp3 <nombre o link>" });
+        return sock.sendMessage(
+          from,
+          { text: "🎧 Uso: .ytmp3 <nombre o link>" },
+          msg ? { quoted: msg } : undefined
+        );
       }
 
-      // ✅ reacción inicio
+      // ✅ reacción al inicio
       if (messageKey) {
         await sock.sendMessage(from, { react: { text: "⏳", key: messageKey } });
       }
@@ -69,40 +79,37 @@ export default {
         const { videos } = await yts(query);
         if (!videos?.length) throw new Error("Sin resultados");
 
-        const v = videos[0];
+        // opcional: evitar lives muy largos
+        const v = videos.find((x) => x.seconds && x.seconds < 1800) || videos[0];
+
         videoUrl = v.url;
         title = v.title;
         thumbnail = v.thumbnail;
         duration = v.timestamp;
       }
 
-      // 1) Pedir URL directa a la API (con retry)
+      // 1) pedir URL directa a la API (con retry)
       const apiRes = await axiosGetWithRetry(
         `${API_URL}?url=${encodeURIComponent(videoUrl)}`,
-        { timeout: 25000 }
+        { timeout: 25000 },
+        2
       );
 
       const directUrl = apiRes?.data?.result?.url;
-      if (!directUrl) throw new Error("API inválida");
 
-      // 2) Descargar en STREAM (sin guardar archivo)
-      const audioStreamRes = await axios({
-        url: directUrl,
-        method: "GET",
-        responseType: "stream",
-        timeout: 60000,
-        maxRedirects: 5,
-        headers: {
-          // ayuda a algunos hosts/CDNs
-          "User-Agent": "Mozilla/5.0",
-        },
-      });
+      // ✅ Validación fuerte para evitar ENOENT / url vacía
+      if (!directUrl || typeof directUrl !== "string" || !directUrl.startsWith("http")) {
+        throw new Error("API inválida: directUrl vacío");
+      }
 
-      // 3) Enviar por stream (más rápido y menos RAM)
+      // Aviso rápido (opcional)
+      // await sock.sendMessage(from, { text: "🎧 Enviando audio..." }, msg ? { quoted: msg } : undefined);
+
+      // 2) enviar por URL directa (más rápido, sin guardar archivo)
       await sock.sendMessage(
         from,
         {
-          audio: audioStreamRes.data,
+          audio: { url: directUrl },
           mimetype: "audio/mpeg",
           fileName: `${title}.mp3`,
           contextInfo: thumbnail
@@ -130,10 +137,16 @@ export default {
       console.error("❌ YTMP3 ERROR:", err?.message || err);
 
       if (messageKey) {
-        await sock.sendMessage(from, { react: { text: "❌", key: messageKey } });
+        try {
+          await sock.sendMessage(from, { react: { text: "❌", key: messageKey } });
+        } catch {}
       }
 
-      await sock.sendMessage(from, { text: "❌ No se pudo descargar el audio" });
+      await sock.sendMessage(
+        from,
+        { text: "❌ No se pudo descargar el audio" },
+        msg ? { quoted: msg } : undefined
+      );
     }
   },
 };
