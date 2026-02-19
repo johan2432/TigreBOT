@@ -5,24 +5,26 @@ import path from "path";
 const BOT_NAME = "SonGokuBot";
 const API_KEY = "dvyer";
 const API_URL = "https://api-adonix.ultraplus.click/download/mediafire";
-const MAX_MB = 300; // límite permitido
+const MAX_MB = 300;
 
 export default {
   command: ["mediafire", "mf"],
-  categoria: "descarga",
-  description: "Descarga archivos de MediaFire",
+  category: "descarga",
 
-  run: async ({ client, m, args }) => {
+  run: async ({ sock, from, args }) => {
     let filePath;
 
     try {
+
       if (!args.length) {
-        return m.reply(
-          "❌ Ingresa un enlace de MediaFire.\n\nEjemplo:\n.mediafire https://www.mediafire.com/file/xxxxx/file"
-        );
+        return sock.sendMessage(from, {
+          text: "❌ Usa:\n.mf <link de mediafire>"
+        });
       }
 
-      await m.reply(`📥 Descargando archivo...\n⏳ ${BOT_NAME} está trabajando`);
+      await sock.sendMessage(from, {
+        text: `📥 Descargando archivo...\n⏳ ${BOT_NAME} trabajando`
+      });
 
       const api = `${API_URL}?apikey=${API_KEY}&url=${encodeURIComponent(args[0])}`;
       const res = await axios.get(api, { timeout: 60000 });
@@ -42,24 +44,20 @@ export default {
         sizeMB = parseFloat(file.size) * 1024;
       }
 
-      // 🚫 Si supera 300MB → enviar solo link
+      // 🚫 Si supera 300MB → solo link
       if (sizeMB > MAX_MB) {
-        return client.sendMessage(
-          m.chat,
-          {
-            text:
-              `📁 *MediaFire Downloader*\n\n` +
-              `📄 *Archivo:* ${file.filename}\n` +
-              `📦 *Tamaño:* ${file.size}\n` +
-              `📂 *Tipo:* ${file.filetype}\n\n` +
-              `⚠️ Supera el límite de 300MB\n\n` +
-              `🔗 Descargar aquí:\n${file.link}`
-          },
-          { quoted: m }
-        );
+        return sock.sendMessage(from, {
+          text:
+            `📁 *MediaFire Downloader*\n\n` +
+            `📄 Archivo: ${file.filename}\n` +
+            `📦 Tamaño: ${file.size}\n` +
+            `📂 Tipo: ${file.filetype}\n\n` +
+            `⚠️ Supera el límite de 300MB\n\n` +
+            `🔗 Descargar:\n${file.link}`
+        });
       }
 
-      // 📂 Carpeta temporal
+      // 📂 Crear carpeta tmp
       const tmpDir = path.join(process.cwd(), "tmp");
       fs.mkdirSync(tmpDir, { recursive: true });
 
@@ -75,29 +73,32 @@ export default {
       fs.writeFileSync(filePath, fileRes.data);
 
       // 📤 Enviar documento
-      await client.sendMessage(
-        m.chat,
-        {
-          document: fs.readFileSync(filePath),
-          fileName: safeName,
-          mimetype: "application/octet-stream",
-          caption:
-            `📁 *MediaFire Downloader*\n\n` +
-            `📄 *Archivo:* ${file.filename}\n` +
-            `📦 *Tamaño:* ${file.size}\n` +
-            `📂 *Tipo:* ${file.filetype}\n\n` +
-            `🤖 ${BOT_NAME}`
-        },
-        { quoted: m }
-      );
+      await sock.sendMessage(from, {
+        document: fs.readFileSync(filePath),
+        fileName: safeName,
+        mimetype: "application/octet-stream",
+        caption:
+          `📁 *MediaFire Downloader*\n\n` +
+          `📄 Archivo: ${file.filename}\n` +
+          `📦 Tamaño: ${file.size}\n` +
+          `📂 Tipo: ${file.filetype}\n\n` +
+          `🤖 ${BOT_NAME}`
+      });
 
     } catch (err) {
+
       console.error("MEDIAFIRE ERROR:", err.message);
-      await m.reply("❌ Error al descargar el archivo.");
+
+      await sock.sendMessage(from, {
+        text: "❌ Error al descargar el archivo."
+      });
+
     } finally {
+
       if (filePath && fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
       }
+
     }
   }
 };
