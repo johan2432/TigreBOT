@@ -1,15 +1,15 @@
-import axios from 'axios';  // Asegúrate de tener axios instalado
-import yts from 'yt-search';  // Asegúrate de tener yt-search instalado
+import axios from 'axios';  // Necesitas instalar axios usando `npm install axios`
+import yts from 'yt-search';  // Necesitas instalar yt-search usando `npm install yt-search`
 import fs from 'fs';
 import path from 'path';
 
-const API_KEY = 'DvYer159';  // Tu API Key
+const API_KEY = 'DvYer159';  // Tu nueva API Key
 const TMP_DIR = path.join(process.cwd(), 'ytmp4');
 if (!fs.existsSync(TMP_DIR)) {
   fs.mkdirSync(TMP_DIR, { recursive: true });
 }
 
-const BASE_URL = 'https://api-sky.ultraplus.click';  // URL base de la API
+const BASE_URL = 'https://api-sky.ultraplus.click'; // Base URL de la API
 
 export default {
   command: ['ytmp1'],
@@ -77,19 +77,19 @@ export default {
 
       console.log("Respuesta de /resolve:", resolveResponse.data);
 
-      const downloadUrl = resolveResponse.data?.result?.media?.dl_download;
-      if (!downloadUrl) {
-        throw new Error('No se pudo obtener el enlace de descarga');
-      }
+      const rel = resolveResponse.data?.result?.media?.dl_download;
+      if (!rel) throw new Error('No se encontró enlace de descarga');
 
-      console.log('Enlace de descarga:', downloadUrl);
+      // Construir la URL completa usando la URL base
+      const downloadUrl = BASE_URL + rel;
+      console.log('Enlace de descarga:', downloadUrl);  // Depuración: Verificar el enlace de descarga completo
 
       // 3) Descargar el archivo
       const videoFilePath = path.join(TMP_DIR, 'video_360p.mp4');
       const writer = fs.createWriteStream(videoFilePath);
 
       const videoRes = await axios({
-        url: downloadUrl,
+        url: downloadUrl,  // Usamos la URL completa ahora
         method: 'GET',
         responseType: 'stream',
       });
