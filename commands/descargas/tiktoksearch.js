@@ -2,8 +2,8 @@ import axios from "axios";
 
 export default {
   name: "ttsearch",
-  command: ["ttsearch", "tts"],
-  category: "descargas",
+  command: ["ttksearch", "tts"],
+  category: "descarga",
   desc: "Busca videos de TikTok y envía 2 resultados",
 
   run: async ({ sock, msg, from, args, settings }) => {
@@ -13,7 +13,7 @@ export default {
     if (!q) {
       return sock.sendMessage(
         from,
-        { text: `❌ Uso:\n${settings.prefix}ttsearch <texto>\nEj: ${settings.prefix}ttsearch edit goku`, ...global.channelInfo },
+        { text: `❌ Uso:\n${settings.prefix}ttksearch <texto>\nEj: ${settings.prefix}ttsearch edit goku`, ...global.channelInfo },
         { quoted: msg }
       );
     }
