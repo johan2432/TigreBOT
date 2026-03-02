@@ -10,9 +10,9 @@ const API_KEY = "may-5d597e52";
 const COOLDOWN_TIME = 15 * 1000;
 const TMP_DIR = path.join(process.cwd(), "tmp");
 
-// ✅ NUEVOS LÍMITES
-const MAX_VIDEO_BYTES = 120 * 1024 * 1024; // 120 MB como video
-const MAX_DOC_BYTES = 200 * 1024 * 1024;   // 200 MB como documento
+// LIMITES
+const MAX_VIDEO_BYTES = 120 * 1024 * 1024; // 120MB video
+const MAX_DOC_BYTES = 200 * 1024 * 1024;   // 200MB documento
 
 const DEFAULT_QUALITY = "360p";
 const cooldowns = new Map();
@@ -41,7 +41,7 @@ function withoutQuality(args) {
   return args.filter((a) => !/^\d{3,4}p$/i.test(a));
 }
 
-// API call
+// API
 async function fetchDirectMediaUrl({ videoUrl, quality }) {
   const { data } = await axios.get(API_URL, {
     timeout: 20000,
@@ -52,8 +52,14 @@ async function fetchDirectMediaUrl({ videoUrl, quality }) {
     },
   });
 
-  if (!data?.status || !data?.result?.url) throw new Error("API inválida");
-  return { title: data?.result?.title || "video", directUrl: data.result.url };
+  if (!data?.status || !data?.result?.url) {
+    throw new Error("API inválida");
+  }
+
+  return {
+    title: data?.result?.title || "video",
+    directUrl: data.result.url,
+  };
 }
 
 async function downloadToFile(directUrl, outPath) {
@@ -76,6 +82,7 @@ async function downloadToFile(directUrl, outPath) {
 
       const size = fs.statSync(outPath).size;
       if (size < 300000) throw new Error("Archivo incompleto");
+
       return size;
     } catch (e) {
       if (i === 2) throw e;
@@ -104,7 +111,7 @@ export default {
     const userId = from;
     let rawMp4, finalMp4;
 
-    // Cooldown
+    // COOLDOWN
     const until = cooldowns.get(userId);
     if (until && until > Date.now()) {
       return sock.sendMessage(from, {
@@ -120,7 +127,7 @@ export default {
       if (!args?.length) {
         cooldowns.delete(userId);
         return sock.sendMessage(from, {
-          text: "❌ Uso: .ytmp4 (opcional 360p) <nombre o link>",
+          text: "❌ Uso: .ytmp4 (360p) <nombre o link>",
           ...global.channelInfo,
         });
       }
@@ -131,14 +138,16 @@ export default {
 
       let videoUrl = query;
       let title = "video";
+      let thumbnail = null;
 
       rawMp4 = path.join(TMP_DIR, `${Date.now()}_raw.mp4`);
       finalMp4 = path.join(TMP_DIR, `${Date.now()}_final.mp4`);
 
-      // Buscar si no es link
+      // 🔎 Buscar si no es link
       if (!isHttpUrl(query)) {
         const search = await yts(query);
         const first = search?.videos?.[0];
+
         if (!first) {
           cooldowns.delete(userId);
           return sock.sendMessage(from, {
@@ -146,45 +155,52 @@ export default {
             ...global.channelInfo,
           });
         }
+
         videoUrl = first.url;
         title = safeFileName(first.title);
+        thumbnail = first.thumbnail;
       }
 
-      // ✅ 1 SOLO MENSAJE (sin spam)
-      const infoMsg = await sock.sendMessage(
+      // Si es link directo, obtener info
+      if (!thumbnail) {
+        const search = await yts(videoUrl);
+        const first = search?.videos?.[0];
+        if (first) {
+          title = safeFileName(first.title);
+          thumbnail = first.thumbnail;
+        }
+      }
+
+      // ✅ MENSAJE ÚNICO CON IMAGEN
+      await sock.sendMessage(
         from,
         {
-          text: `⬇️ Descargando…\n🎚️ ${quality}\n⏳ Por favor espera.`,
+          image: { url: thumbnail },
+          caption: `⬇️ Descargando...\n\n🎬 ${title}\n🎚️ Calidad: ${quality}\n⏳ Espera por favor...`,
           ...global.channelInfo,
         },
         quoted
       );
 
-      // API + descarga
+      // API
       const info = await fetchDirectMediaUrl({ videoUrl, quality });
       title = safeFileName(info.title);
 
+      // DESCARGA
       await downloadToFile(info.directUrl, rawMp4);
       await ffmpegFaststart(rawMp4, finalMp4);
 
-      const size = fs.existsSync(finalMp4) ? fs.statSync(finalMp4).size : 0;
-      if (!size || size < 300000) throw new Error("Archivo final inválido");
+      const size = fs.existsSync(finalMp4)
+        ? fs.statSync(finalMp4).size
+        : 0;
 
-      // ✅ NUEVO LIMITE DOCUMENTO 200MB
-      if (size > MAX_DOC_BYTES) throw new Error("Archivo demasiado grande para enviar (máx 200MB).");
+      if (!size || size < 300000)
+        throw new Error("Archivo inválido");
 
-      // (Opcional) editar el mensaje a “enviando”
-      try {
-        if (infoMsg?.key) {
-          await sock.sendMessage(from, {
-            text: `📤 Enviando: ${title}…`,
-            edit: infoMsg.key,
-            ...global.channelInfo,
-          });
-        }
-      } catch {}
+      if (size > MAX_DOC_BYTES)
+        throw new Error("Supera 200MB");
 
-      // ✅ NUEVO LIMITE VIDEO 120MB
+      // ENVÍO FINAL
       if (size <= MAX_VIDEO_BYTES) {
         await sock.sendMessage(
           from,
@@ -203,18 +219,19 @@ export default {
             document: { url: finalMp4 },
             mimetype: "video/mp4",
             fileName: `${title}.mp4`,
-            caption: `📄 Enviado como documento.\n🎬 ${title}`,
+            caption: `📄 Enviado como documento\n🎬 ${title}`,
             ...global.channelInfo,
           },
           quoted
         );
       }
+
     } catch (err) {
       console.error("YTMP4 ERROR:", err?.message || err);
       cooldowns.delete(userId);
 
       await sock.sendMessage(from, {
-        text: "❌ Error al procesar (API caída / enlace inválido / archivo pesado).",
+        text: "❌ Error al procesar el video.",
         ...global.channelInfo,
       });
     } finally {
