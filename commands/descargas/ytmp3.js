@@ -9,13 +9,13 @@ const API_KEY = "may-5d597e52";
 
 const COOLDOWN_TIME = 10 * 1000;
 const TMP_DIR = path.join(process.cwd(), "tmp");
+const MAX_AUDIO_BYTES = 100 * 1024 * 1024; // 100MB
 
-const MAX_AUDIO_BYTES = 100 * 1024 * 1024; // 100MB max audio
-
-const DEFAULT_QUALITY = "128kbps";
 const cooldowns = new Map();
 
-if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
+if (!fs.existsSync(TMP_DIR)) {
+  fs.mkdirSync(TMP_DIR, { recursive: true });
+}
 
 function safeFileName(name) {
   return String(name || "audio")
@@ -29,13 +29,13 @@ function isHttpUrl(s) {
   return /^https?:\/\//i.test(String(s || ""));
 }
 
-// API
+// Obtener link directo desde la API
 async function fetchDirectMediaUrl({ videoUrl }) {
   const { data } = await axios.get(API_URL, {
     timeout: 20000,
     params: {
       url: videoUrl,
-      quality: "360p", // solo para obtener link válido
+      quality: "360p",
       apikey: API_KEY,
     },
   });
@@ -50,7 +50,7 @@ async function fetchDirectMediaUrl({ videoUrl }) {
   };
 }
 
-// Convertir directo a MP3
+// Convertir a MP3 con ffmpeg
 async function convertToMp3(inputUrl, outputPath) {
   return new Promise((resolve, reject) => {
     exec(
@@ -61,9 +61,8 @@ async function convertToMp3(inputUrl, outputPath) {
 }
 
 export default {
- command: ["ytmp3", "play"]
- category: "descarga",
-}
+  command: ["ytmp3", "play"],
+  category: "descarga",
 
   run: async (ctx) => {
     const { sock, from, args } = ctx;
@@ -79,6 +78,7 @@ export default {
         ...global.channelInfo,
       });
     }
+
     cooldowns.set(userId, Date.now() + COOLDOWN_TIME);
 
     const quoted = msg?.key ? { quoted: msg } : undefined;
@@ -93,14 +93,13 @@ export default {
       }
 
       const query = args.join(" ").trim();
-
       let videoUrl = query;
       let title = "audio";
       let thumbnail = null;
 
       finalMp3 = path.join(TMP_DIR, `${Date.now()}.mp3`);
 
-      // Buscar si no es link
+      // Si no es link, buscar en YouTube
       if (!isHttpUrl(query)) {
         const search = await yts(query);
         const first = search?.videos?.[0];
@@ -118,41 +117,44 @@ export default {
         thumbnail = first.thumbnail;
       }
 
-      // Obtener info
+      // Obtener info desde API
       const info = await fetchDirectMediaUrl({ videoUrl });
       title = safeFileName(info.title);
 
+      // Si no hay thumbnail, intentar obtenerla
       if (!thumbnail) {
         const search = await yts(videoUrl);
         const first = search?.videos?.[0];
         if (first) thumbnail = first.thumbnail;
       }
 
-      // Mensaje único con imagen
+      // Mensaje previo
       await sock.sendMessage(
         from,
         {
-          image: { url: thumbnail },
+          image: thumbnail ? { url: thumbnail } : undefined,
           caption: `🎵 Descargando música...\n\n🎧 ${title}`,
           ...global.channelInfo,
         },
         quoted
       );
 
-      // Convertir directo a mp3
+      // Convertir a mp3
       await convertToMp3(info.directUrl, finalMp3);
 
       const size = fs.existsSync(finalMp3)
         ? fs.statSync(finalMp3).size
         : 0;
 
-      if (!size || size < 100000)
+      if (!size || size < 100000) {
         throw new Error("Audio inválido");
+      }
 
-      if (size > MAX_AUDIO_BYTES)
+      if (size > MAX_AUDIO_BYTES) {
         throw new Error("Audio demasiado grande");
+      }
 
-      // Enviar como audio real (NO documento)
+      // Enviar como audio real
       await sock.sendMessage(
         from,
         {
