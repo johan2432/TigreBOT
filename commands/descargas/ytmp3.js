@@ -91,7 +91,7 @@ async function convertToMp3(inputUrl, outputPath) {
 }
 
 export default {
-  command: ["ytmp3", "play"],
+  command: ["ytmp3", "play", "yt1"],
   category: "descarga",
 
   run: async (ctx) => {
