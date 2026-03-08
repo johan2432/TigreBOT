@@ -1,15 +1,9 @@
-import fs from "fs";
-import path from "path";
 import axios from "axios";
 import yts from "yt-search";
 
 const API = "https://nexevo.onrender.com/download/y";
-const TMP_DIR = path.join(process.cwd(),"tmp");
 
 const channelInfo = global.channelInfo || {};
-
-if(!fs.existsSync(TMP_DIR))
-fs.mkdirSync(TMP_DIR,{recursive:true});
 
 function safeFileName(name){
 return String(name||"audio")
@@ -34,8 +28,6 @@ text:"❌ Uso: .play canción",
 });
 }
 
-let tempFile;
-
 try{
 
 const query = args.join(" ");
@@ -53,7 +45,7 @@ text:"❌ No encontré resultados",
 
 await sock.sendMessage(from,{
 image:{url:video.thumbnail},
-caption:`🎵 Descargando música...\n\n${video.title}`,
+caption:`🎵 Descargando...\n\n${video.title}`,
 ...channelInfo
 },{quoted:msg});
 
@@ -68,22 +60,8 @@ throw new Error("API sin audio");
 
 const audioUrl = data.result.url;
 
-tempFile = path.join(TMP_DIR,Date.now()+".mp3");
-
-const res = await axios({
-url:audioUrl,
-method:"GET",
-responseType:"stream"
-});
-
-const writer = fs.createWriteStream(tempFile);
-
-res.data.pipe(writer);
-
-await new Promise(r=>writer.on("finish",r));
-
 await sock.sendMessage(from,{
-audio:{url:tempFile},
+audio:{ url: audioUrl },
 mimetype:"audio/mpeg",
 fileName:safeFileName(video.title)+".mp3",
 ...channelInfo
@@ -97,15 +75,6 @@ sock.sendMessage(from,{
 text:"❌ Error descargando música",
 ...channelInfo
 });
-
-}finally{
-
-setTimeout(()=>{
-try{
-if(tempFile && fs.existsSync(tempFile))
-fs.unlinkSync(tempFile)
-}catch{}
-},10000)
 
 }
 
