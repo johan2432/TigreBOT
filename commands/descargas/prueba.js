@@ -10,23 +10,31 @@ async run(client, message, args){
 try{
 
 if(!args || args.length === 0){
-return message.reply("❌ Escribe algo\nEjemplo:\nyt2 bad bunny")
+return client.sendMessage(message.chat,{
+text:"❌ Escribe algo\nEjemplo:\nyt2 bad bunny"
+})
 }
 
 const query = args.join(" ")
 
-await message.reply("🔎 Buscando video...")
+await client.sendMessage(message.chat,{
+text:"🔎 Buscando video..."
+})
 
 const search = await yts(query)
 const video = search.videos[0]
 
 if(!video){
-return message.reply("❌ No encontrado")
+return client.sendMessage(message.chat,{
+text:"❌ No encontrado"
+})
 }
 
 const url = video.url
 
-await message.reply("⚡ Probando APIs...")
+await client.sendMessage(message.chat,{
+text:"⚡ Probando APIs..."
+})
 
 const apis = [
 
@@ -87,7 +95,9 @@ continue
 }
 
 if(!download){
-return message.reply("❌ Ninguna API funcionó")
+return client.sendMessage(message.chat,{
+text:"❌ Ninguna API funcionó"
+})
 }
 
 await client.sendMessage(message.chat,{
@@ -98,7 +108,10 @@ caption:`🎬 ${video.title}`
 }catch(e){
 
 console.log("ERROR yt2:",e)
-message.reply("❌ Error")
+
+client.sendMessage(message.chat,{
+text:"❌ Error en descarga"
+})
 
 }
 
