@@ -4,11 +4,9 @@ import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
 
-// Configuración de la API (Solo Audio)
 const API_BASE = "https://dv-yer-api.online/ytmp3";
 const COOLDOWN = 8000;
 const cooldowns = new Map();
-const TMP_DIR = path.join(process.cwd(), "tmp");
 
 let busy = false;
 
@@ -76,7 +74,6 @@ export default {
       let thumbnail = "";
       let duration = "??";
 
-      // Búsqueda en YouTube si no es un link directo
       if (!/^https?:\/\//i.test(query)) {
         const { videos } = await yts(query);
         if (!videos?.length) throw new Error("Sin resultados");
@@ -87,15 +84,14 @@ export default {
         duration = v.timestamp;
       }
 
-      // Mensaje de "Descargando..."
       await sock.sendMessage(
         from,
         {
-          text: `🎧 *Descargando Audio...*\n\n🎵 ${title}\n⏱ ${duration}`,
+          text: `🎧 *Descargando...*\n\n🎵 ${title}\n⏱ ${duration}`,
           contextInfo: {
             externalAdReply: {
               title: title,
-              body: `⏱ Duración: ${duration}`,
+              body: `⏱ ${duration}`,
               thumbnailUrl: thumbnail,
               sourceUrl: videoUrl,
               mediaType: 1,
@@ -108,32 +104,29 @@ export default {
         msg ? { quoted: msg } : undefined
       );
 
-      // Petición a la API con los parámetros que indicaste
+      // Petición con User-Agent para evitar bloqueos
       const apiRes = await axios.get(API_BASE, {
-        params: {
-          mode: "link",
-          quality: "128k",
-          url: videoUrl
+        params: { mode: "link", quality: "128k", url: videoUrl },
+        headers: { 
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36" 
         },
         timeout: 35000
       });
 
       const data = apiRes.data;
-      
-      // Usamos 'download_url_full' según el JSON de ejemplo
       const audioUrl = data?.download_url_full;
 
       if (!data?.ok || !audioUrl) {
-        throw new Error("La API no proporcionó un enlace de descarga.");
+        throw new Error("La API no devolvió un enlace válido.");
       }
 
-      // Enviar el audio final
       await withGlobalLock(async () => {
         await sock.sendMessage(
           from,
           {
             audio: { url: audioUrl },
             mimetype: "audio/mpeg",
+            ptt: false, // Asegura que se envíe como archivo de audio
             fileName: `${safeFileName(title)}.mp3`,
             contextInfo: {
               externalAdReply: {
@@ -165,7 +158,7 @@ export default {
 
       await sock.sendMessage(
         from,
-        { text: "❌ Error: No se pudo procesar la descarga.", ...global.channelInfo },
+        { text: "❌ No se pudo descargar el audio. Intenta de nuevo.", ...global.channelInfo },
         msg ? { quoted: msg } : undefined
       );
     }
