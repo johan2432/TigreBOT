@@ -9,7 +9,7 @@ import {
 
 export default {
   name: "subbots",
-  command: ["subbots", "codigosubbots", "estadosubbots", "subbotsactivos"],
+  command: ["bots", "codigosubbots", "estadosubbots", "subbotsactivos"],
   category: "subbots",
   description: "Muestra el panel de subbots",
 
