@@ -12,7 +12,7 @@ const API_SEARCH_URL = `${API_BASE}/ytsearch`;
 const COOLDOWN_TIME = 15 * 1000;
 const VIDEO_QUALITY = "360p";
 const REQUEST_TIMEOUT = 120000;
-const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 800 * 1024 * 1024;
 const VIDEO_AS_DOCUMENT_THRESHOLD = 70 * 1024 * 1024;
 const TMP_DIR = path.join(process.cwd(), "tmp");
 
