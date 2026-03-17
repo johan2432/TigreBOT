@@ -523,41 +523,6 @@ function normalizeMessageContent(message = {}) {
   return content || {};
 }
 
-function extractInteractiveResponseId(msg = {}) {
-  const paramsJson =
-    msg?.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson || "";
-
-  if (paramsJson) {
-    try {
-      const parsed = JSON.parse(paramsJson);
-      const candidates = [
-        parsed?.id,
-        parsed?.rowId,
-        parsed?.row_id,
-        parsed?.selectedId,
-        parsed?.selected_id,
-        parsed?.selectedRowId,
-        parsed?.selected_row_id,
-        parsed?.buttonId,
-        parsed?.button_id,
-        parsed?.name,
-        parsed?.title,
-      ];
-
-      const match = candidates.find((value) => String(value || "").trim());
-      if (match) {
-        return String(match).trim();
-      }
-    } catch {}
-  }
-
-  return (
-    msg?.interactiveResponseMessage?.buttonReply?.id ||
-    msg?.interactiveResponseMessage?.buttonReply?.displayText ||
-    ""
-  );
-}
-
 function obtenerTexto(message) {
   const msg = normalizeMessageContent(message);
 
@@ -567,12 +532,11 @@ function obtenerTexto(message) {
     msg?.imageMessage?.caption ||
     msg?.videoMessage?.caption ||
     msg?.documentMessage?.caption ||
-    extractInteractiveResponseId(msg) ||
-    msg?.buttonsResponseMessage?.selectedButtonId ||
     msg?.buttonsResponseMessage?.selectedDisplayText ||
+    msg?.buttonsResponseMessage?.selectedButtonId ||
     msg?.templateButtonReplyMessage?.selectedId ||
-    msg?.listResponseMessage?.singleSelectReply?.selectedRowId ||
     msg?.listResponseMessage?.title ||
+    msg?.listResponseMessage?.singleSelectReply?.selectedRowId ||
     ""
   );
 }
