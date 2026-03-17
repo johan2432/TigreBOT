@@ -432,6 +432,49 @@ function sanitizePhoneNumber(value) {
   return String(value || "").replace(/\D/g, "");
 }
 
+function runPm2Command(args = [], extraEnv = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(getPm2Executable(), args, {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        ...extraEnv,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout?.on("data", (chunk) => {
+      stdout += String(chunk || "");
+    });
+
+    child.stderr?.on("data", (chunk) => {
+      stderr += String(chunk || "");
+    });
+
+    child.on("error", (error) => {
+      resolve({
+        ok: false,
+        code: -1,
+        stdout,
+        stderr,
+        error,
+      });
+    });
+
+    child.on("close", (code) => {
+      resolve({
+        ok: code === 0,
+        code: Number(code || 0),
+        stdout,
+        stderr,
+      });
+    });
+  });
+}
+
 function normalizeJidUser(value = "") {
   const jid = String(value || "").trim();
   if (!jid) return "";
@@ -681,6 +724,24 @@ function getManagedProcessBotConfigs() {
 
   const targetConfig = getBotConfigById(PROCESS_BOT_ID);
   return targetConfig ? [targetConfig] : [];
+}
+
+function getPm2Executable() {
+  return process.platform === "win32" ? "pm2.cmd" : "pm2";
+}
+
+function getSplitProcessName(botId) {
+  const normalized = normalizeProcessBotId(botId);
+  if (normalized === "main") {
+    return "dvyer-main";
+  }
+
+  const slotMatch = normalized.match(/^subbot(\d{1,2})$/);
+  if (slotMatch) {
+    return `dvyer-subbot-${Number.parseInt(slotMatch[1], 10)}`;
+  }
+
+  return `dvyer-${normalized}`;
 }
 
 function getSubbotConfigBySlot(slotNumber) {
@@ -1313,6 +1374,10 @@ function releaseSubbotSlot(botState, options = {}) {
     `${getBotTag(botState)} Slot liberado (${options?.reason || "sin motivo"})`
   );
   writePersistedBotRuntimeState(botState);
+
+  if (SPLIT_PROCESS_MODE && botState?.config?.id !== "main") {
+    void deleteSplitBotProcess(botState.config.id).catch(() => {});
+  }
 
   return true;
 }
@@ -1993,6 +2058,89 @@ function hasPersistedBotSession(config = {}) {
   }
 }
 
+function hasPendingSubbotAssignment(config = {}) {
+  return Boolean(
+    sanitizePhoneNumber(config?.pairingNumber) ||
+      sanitizePhoneNumber(config?.requesterNumber) ||
+      String(config?.requesterJid || "").trim() ||
+      normalizeTimestamp(config?.requestedAt)
+  );
+}
+
+function shouldKeepSplitSubbotProcess(config = {}) {
+  if (!config || config.id === "main" || config.enabled === false) {
+    return false;
+  }
+
+  return Boolean(hasPersistedBotSession(config) || hasPendingSubbotAssignment(config));
+}
+
+async function listPm2ProcessNames() {
+  const result = await runPm2Command(["jlist"]);
+  if (!result.ok) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(result.stdout || "[]");
+    return Array.isArray(parsed)
+      ? parsed.map((item) => String(item?.name || "").trim()).filter(Boolean)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+async function ensureSplitBotProcess(config = {}) {
+  if (!SPLIT_PROCESS_MODE || !isPm2Environment(process.env) || !config?.id) {
+    return false;
+  }
+
+  const processName = getSplitProcessName(config.id);
+  const names = await listPm2ProcessNames();
+  if (names.includes(processName)) {
+    return true;
+  }
+
+  const result = await runPm2Command(
+    ["start", "index.js", "--name", processName, "--cwd", process.cwd(), "--update-env"],
+    {
+      BOT_INSTANCE: config.id,
+    }
+  );
+
+  if (result.ok) {
+    await runPm2Command(["save"]);
+    console.log(`[PM2] Proceso iniciado: ${processName}`);
+    return true;
+  }
+
+  console.error(`[PM2] No pude iniciar ${processName}:`, result.stderr || result.stdout);
+  return false;
+}
+
+async function deleteSplitBotProcess(botId) {
+  if (!SPLIT_PROCESS_MODE || !isPm2Environment(process.env) || !botId) {
+    return false;
+  }
+
+  const processName = getSplitProcessName(botId);
+  const names = await listPm2ProcessNames();
+  if (!names.includes(processName)) {
+    return true;
+  }
+
+  const result = await runPm2Command(["delete", processName]);
+  if (result.ok) {
+    await runPm2Command(["save"]);
+    console.log(`[PM2] Proceso eliminado: ${processName}`);
+    return true;
+  }
+
+  console.error(`[PM2] No pude eliminar ${processName}:`, result.stderr || result.stdout);
+  return false;
+}
+
 function shouldStartSecondaryBot(config = {}) {
   if (!config || config.id === "main") return false;
   if (config.enabled === false) return false;
@@ -2116,6 +2264,21 @@ async function syncManagedProcessBots() {
     }
 
     writePersistedBotRuntimeState(botState);
+  }
+}
+
+async function syncSplitSubbotProcessPool() {
+  if (!SPLIT_PROCESS_MODE || PROCESS_BOT_ID !== "main" || !isPm2Environment(process.env)) {
+    return;
+  }
+
+  for (const config of SUBBOT_SLOT_CONFIGS) {
+    if (shouldKeepSplitSubbotProcess(config)) {
+      await ensureSplitBotProcess(config);
+      continue;
+    }
+
+    await deleteSplitBotProcess(config.id);
   }
 }
 
@@ -2524,6 +2687,7 @@ global.botRuntime = {
     const targetState = ensureBotState(targetConfig);
 
     if (!ownsBotInThisProcess(targetConfig.id) && SPLIT_PROCESS_MODE) {
+      await ensureSplitBotProcess(targetConfig);
       return waitForRemoteBotPairing(targetConfig);
     }
 
@@ -2841,11 +3005,15 @@ async function start() {
   await cargarComandos();
   banner();
   await syncManagedProcessBots();
+  await syncSplitSubbotProcessPool();
   flushManagedBotRuntimeStates();
 
   if (!managedBotSyncInterval) {
     managedBotSyncInterval = setInterval(() => {
-      syncManagedProcessBots().catch((err) => {
+      (async () => {
+        await syncManagedProcessBots();
+        await syncSplitSubbotProcessPool();
+      })().catch((err) => {
         console.error("Error sincronizando procesos del bot:", err);
       });
     }, SETTINGS_SYNC_INTERVAL_MS);

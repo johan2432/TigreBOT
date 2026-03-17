@@ -1,4 +1,5 @@
 const path = require("path");
+const fs = require("fs");
 
 const settings = require("./settings/settings.json");
 
@@ -34,7 +35,42 @@ const apps = [
   },
 ];
 
+function hasPersistedSession(authFolder) {
+  if (!authFolder) return false;
+
+  const credsPath = path.join(cwd, authFolder, "creds.json");
+  if (!fs.existsSync(credsPath)) return false;
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(credsPath, "utf8"));
+    return Boolean(parsed?.registered || parsed?.me?.id);
+  } catch {
+    return false;
+  }
+}
+
+function shouldRunSubbot(slotConfig = {}) {
+  return Boolean(
+    slotConfig?.enabled &&
+      (
+        slotConfig?.pairingNumber ||
+        slotConfig?.requesterNumber ||
+        slotConfig?.requesterJid ||
+        slotConfig?.requestedAt ||
+        hasPersistedSession(slotConfig?.authFolder)
+      )
+  );
+}
+
 for (let slot = 1; slot <= maxSlots; slot += 1) {
+  const slotConfig = Array.isArray(settings?.subbots)
+    ? settings.subbots.find((item) => Number(item?.slot || 0) === slot)
+    : null;
+
+  if (!shouldRunSubbot(slotConfig)) {
+    continue;
+  }
+
   apps.push({
     ...baseApp,
     name: `dvyer-subbot-${slot}`,
