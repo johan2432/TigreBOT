@@ -940,9 +940,7 @@ function ensureBotState(config) {
     reconnectTimer: null,
     groupCache: new Map(),
     store: createStoreForBot(config.id),
-    downloadQueue: [],
-    activeDownloadJob: null,
-    activeDownloadStartedAt: 0,
+    activeDownloadJobs: new Map(),
     downloadQueueCounter: 0,
   };
 
@@ -1296,68 +1294,45 @@ function isDownloadCommand(cmd) {
 
 function ensureBotDownloadQueue(botState) {
   if (!botState) return;
-  if (!Array.isArray(botState.downloadQueue)) {
-    botState.downloadQueue = [];
+  if (!(botState.activeDownloadJobs instanceof Map)) {
+    botState.activeDownloadJobs = new Map();
   }
   if (!Number.isFinite(Number(botState.downloadQueueCounter))) {
     botState.downloadQueueCounter = 0;
-  }
-  if (!Number.isFinite(Number(botState.activeDownloadStartedAt))) {
-    botState.activeDownloadStartedAt = 0;
   }
 }
 
 function getBotDownloadQueueState(botState) {
   ensureBotDownloadQueue(botState);
 
+  const activeJobs = Array.from(botState?.activeDownloadJobs?.values?.() || []);
+  const currentCommandList = activeJobs
+    .map((job) => String(job?.commandName || "").trim())
+    .filter(Boolean);
+  const currentCommand =
+    currentCommandList.length > 3
+      ? `${currentCommandList.slice(0, 3).join(", ")} +${currentCommandList.length - 3}`
+      : currentCommandList.join(", ");
+  const oldestJob = activeJobs.reduce((oldest, job) => {
+    if (!oldest) return job;
+    return Number(job?.startedAt || 0) < Number(oldest?.startedAt || 0) ? job : oldest;
+  }, null);
+
   return {
-    active: Boolean(botState?.activeDownloadJob),
-    pending: Number(botState?.downloadQueue?.length || 0),
-    currentCommand: String(botState?.activeDownloadJob?.commandName || "").trim(),
+    active: activeJobs.length > 0,
+    activeCount: activeJobs.length,
+    pending: 0,
+    currentCommand,
     runningForMs:
-      botState?.activeDownloadJob && botState?.activeDownloadStartedAt
-        ? Math.max(0, Date.now() - botState.activeDownloadStartedAt)
+      oldestJob?.startedAt
+        ? Math.max(0, Date.now() - Number(oldestJob.startedAt))
         : 0,
   };
-}
-
-function processNextDownloadQueueJob(botState) {
-  ensureBotDownloadQueue(botState);
-
-  if (!botState || botState.activeDownloadJob || !botState.downloadQueue.length) {
-    return;
-  }
-
-  const nextJob = botState.downloadQueue.shift();
-  if (!nextJob) return;
-
-  botState.activeDownloadJob = nextJob;
-  botState.activeDownloadStartedAt = Date.now();
-
-  Promise.resolve()
-    .then(() => nextJob.run())
-    .then((result) => {
-      nextJob.resolve(result);
-    })
-    .catch((error) => {
-      nextJob.reject(error);
-    })
-    .finally(() => {
-      if (botState.activeDownloadJob?.id === nextJob.id) {
-        botState.activeDownloadJob = null;
-      }
-      botState.activeDownloadStartedAt = 0;
-      processNextDownloadQueueJob(botState);
-    });
 }
 
 function enqueueDownloadCommand(botState, cmd, commandContext) {
   ensureBotDownloadQueue(botState);
 
-  const queueState = getBotDownloadQueueState(botState);
-  const queuePosition = queueState.active
-    ? queueState.pending + 2
-    : queueState.pending + 1;
   const jobId = Number(botState.downloadQueueCounter || 0) + 1;
   botState.downloadQueueCounter = jobId;
 
@@ -1368,20 +1343,29 @@ function enqueueDownloadCommand(botState, cmd, commandContext) {
     rejectJob = reject;
   });
 
-  botState.downloadQueue.push({
+  const activeJob = {
     id: jobId,
     commandName: commandContext?.commandName || cmd?.name || "descarga",
-    queuedAt: Date.now(),
-    run: async () => cmd.run(commandContext),
-    resolve: resolveJob,
-    reject: rejectJob,
-  });
+    startedAt: Date.now(),
+  };
+  botState.activeDownloadJobs.set(jobId, activeJob);
 
-  processNextDownloadQueueJob(botState);
+  Promise.resolve()
+    .then(() => cmd.run(commandContext))
+    .then((result) => {
+      resolveJob(result);
+    })
+    .catch((error) => {
+      rejectJob(error);
+    })
+    .finally(() => {
+      botState.activeDownloadJobs.delete(jobId);
+    });
 
   return {
     promise,
-    position: queuePosition,
+    position: 1,
+    activeCount: botState.activeDownloadJobs.size,
   };
 }
 
@@ -1690,6 +1674,7 @@ function summarizeBotState(botState) {
     cachedPairingCode: cachedPairing?.code || "",
     cachedPairingNumber: cachedPairing?.number || "",
     cachedPairingExpiresInMs: cachedPairing?.expiresInMs || 0,
+    activeDownloadCount: queueState.activeCount,
     downloadQueuePending: queueState.pending,
     downloadQueueActive: queueState.active,
     currentDownloadCommand: queueState.currentCommand,
@@ -1731,6 +1716,7 @@ function summarizeBotConfig(config) {
     cachedPairingCode: "",
     cachedPairingNumber: "",
     cachedPairingExpiresInMs: 0,
+    activeDownloadCount: 0,
     downloadQueuePending: 0,
     downloadQueueActive: false,
     currentDownloadCommand: "",
@@ -2268,26 +2254,9 @@ async function handleIncomingMessages(botState, sock, messages) {
       trackCommandUsage(botState, m, commandData.commandName);
 
       if (isDownloadCommand(cmd)) {
-        const queuedJob = enqueueDownloadCommand(botState, cmd, commandContext);
-
-        if (queuedJob.position > 1) {
-          await sock.sendMessage(
-            commandContext.from,
-            {
-              text:
-                `*COLA DE DESCARGAS ${botState.config.label}*\n\n` +
-                `Tu solicitud *${commandContext.commandName}* fue agregada a la cola.\n` +
-                `Turno: *#${queuedJob.position}*\n` +
-                `Antes de ti: *${queuedJob.position - 1}*\n\n` +
-                `Puedes seguir usando otros comandos mientras esperas.`,
-              ...global.channelInfo,
-            },
-            getQuoteOptions(commandContext.msg)
-          );
-        }
-
-        queuedJob.promise.catch((err) => {
-          console.error(`${getBotTag(botState)} Error comando en cola:`, err);
+        const runningJob = enqueueDownloadCommand(botState, cmd, commandContext);
+        runningJob.promise.catch((err) => {
+          console.error(`${getBotTag(botState)} Error comando concurrente:`, err);
         });
         continue;
       }
