@@ -139,6 +139,10 @@ export default {
       const rows = buildRows(categories, prefix);
       const header = await buildHeader(sock);
 
+      console.log(
+        `CATALOGO PRUEBA SEND chat=${from} filas=${rows.length} media=${header.hasMediaAttachment}`
+      );
+
       const interactiveMessage = {
         body: {
           text:
@@ -196,6 +200,8 @@ export default {
       await sock.relayMessage(from, message.message, {
         messageId: message.key.id,
       });
+
+      console.log(`CATALOGO PRUEBA OK chat=${from}`);
     } catch (error) {
       console.error("CATALOGO PRUEBA ERROR:", error);
       await sock.sendMessage(
