@@ -55,6 +55,37 @@ export function formatDuration(ms) {
   return `${seconds}s`;
 }
 
+export function formatMoment(value, fallback = "Sin registro") {
+  const timestamp = normalizeTimestamp(value);
+  if (!timestamp) {
+    return fallback;
+  }
+
+  const diffMs = Date.now() - timestamp;
+  const relative = diffMs >= 0
+    ? `hace ${formatDuration(diffMs)}`
+    : `en ${formatDuration(Math.abs(diffMs))}`;
+
+  return `${formatDateTime(timestamp)} | ${relative}`;
+}
+
+export function maskSubbotNumber(value, fallback = "No configurado") {
+  const digits = normalizeNumber(value);
+  if (!digits) {
+    return fallback;
+  }
+
+  if (digits.length <= 4) {
+    return digits;
+  }
+
+  const visiblePrefix = digits.slice(0, Math.min(3, digits.length - 4));
+  const visibleSuffix = digits.slice(-4);
+  const hiddenCount = Math.max(2, digits.length - visiblePrefix.length - visibleSuffix.length);
+
+  return `${visiblePrefix}${"*".repeat(hiddenCount)}${visibleSuffix}`;
+}
+
 export function getCurrentChatStatus({ isGroup, botId, botLabel }) {
   if (!isGroup) {
     return "Panel abierto por privado.";
@@ -76,46 +107,78 @@ export function getSubbotStateLabel(bot) {
   return "RESERVADO";
 }
 
-export function buildSubbotCard(bot) {
-  const requesterNumber = bot.requesterNumber || "Sin solicitante";
-  const linkedNumber = bot.configuredNumber || "No configurado";
-  const requestedAt = normalizeTimestamp(bot.requestedAt);
-  const releasedAt = normalizeTimestamp(bot.releasedAt);
-  const connectedFor = bot.connectedForMs
-    ? formatDuration(bot.connectedForMs)
-    : "No conectado";
-  const requestedFor = requestedAt
-    ? formatDateTime(requestedAt)
-    : "Sin solicitud";
-  const releasedText = releasedAt
-    ? formatDateTime(releasedAt)
-    : "Sin liberar aun";
-  const horaActiva = bot.connectedAt ? formatDateTime(bot.connectedAt) : "No conectado";
-  const ultimaSalida = bot.lastDisconnectAt
-    ? formatDateTime(bot.lastDisconnectAt)
-    : "Sin desconexion reciente";
+function getSubbotCompactLines(bot) {
+  const lines = [
+    `[ SLOT ${bot.slot} ] ${getSubbotStateLabel(bot)}`,
+    `Bot: ${bot.displayName}`,
+  ];
 
-  let extra = "";
-
-  if (bot.cachedPairingCode) {
-    extra =
-      `\nCodigo en cache: ${bot.cachedPairingCode}` +
-      `\nExpira en: ${formatDuration(bot.cachedPairingExpiresInMs)}`;
+  if (bot.connected) {
+    lines.push(`Tiempo activo: ${formatDuration(bot.connectedForMs || 0)}`);
+    lines.push(`Conectado desde: ${formatMoment(bot.connectedAt, "Sin conexion activa")}`);
+    return lines;
   }
 
-  return (
-    `*Slot ${bot.slot} - ${bot.label}*\n` +
-    `Estado: ${getSubbotStateLabel(bot)}\n` +
-    `Bot: ${bot.displayName}\n` +
-    `Solicitante: ${requesterNumber}\n` +
-    `Numero vinculado: ${linkedNumber}\n` +
-    `Solicitado: ${requestedFor}\n` +
-    `Conectado desde: ${horaActiva}\n` +
-    `Tiempo conectado: ${connectedFor}\n` +
-    `Ultima salida: ${ultimaSalida}\n` +
-    `Liberado: ${releasedText}\n` +
-    `Sesion: ${bot.authFolder}${extra}`
-  );
+  if (bot.connecting) {
+    lines.push("Tiempo activo: iniciando conexion");
+    lines.push(`Solicitud: ${formatMoment(bot.requestedAt, "Sin solicitud reciente")}`);
+    return lines;
+  }
+
+  if (bot.pairingPending) {
+    lines.push("Tiempo activo: esperando vinculacion");
+    lines.push(`Solicitud: ${formatMoment(bot.requestedAt, "Sin solicitud reciente")}`);
+    return lines;
+  }
+
+  if (bot.registered) {
+    lines.push("Tiempo activo: no activo ahora");
+    lines.push(`Ultima salida: ${formatMoment(bot.lastDisconnectAt, "Sin desconexion reciente")}`);
+    return lines;
+  }
+
+  if (!bot.enabled) {
+    lines.push("Tiempo activo: libre para usar");
+    lines.push("Solicitud: sin reserva actual");
+    return lines;
+  }
+
+  lines.push("Tiempo activo: reservado");
+  lines.push(`Solicitud: ${formatMoment(bot.requestedAt, "Sin solicitud reciente")}`);
+  return lines;
+}
+
+export function buildSubbotCard(bot, options = {}) {
+  const compact = options?.compact !== false;
+  const showSensitive = options?.showSensitive === true;
+
+  if (compact) {
+    return getSubbotCompactLines(bot).join("\n");
+  }
+
+  const lines = [
+    `[ PANEL SLOT ${bot.slot} ] ${getSubbotStateLabel(bot)}`,
+    `Bot: ${bot.displayName}`,
+    `Label: ${bot.label || `SUBBOT${bot.slot}`}`,
+    `Tiempo activo: ${bot.connected ? formatDuration(bot.connectedForMs || 0) : "No activo ahora"}`,
+    `Conectado desde: ${formatMoment(bot.connectedAt, "Sin conexion activa")}`,
+    `Solicitud detectada: ${formatMoment(bot.requestedAt, "Sin solicitud reciente")}`,
+    `Ultima salida: ${formatMoment(bot.lastDisconnectAt, "Sin desconexion reciente")}`,
+    `Liberado: ${formatMoment(bot.releasedAt, "Sin liberar aun")}`,
+  ];
+
+  if (showSensitive) {
+    lines.push(`Solicitante: ${maskSubbotNumber(bot.requesterNumber, "Sin solicitante")}`);
+    lines.push(`Numero vinculado: ${maskSubbotNumber(bot.configuredNumber, "No configurado")}`);
+    lines.push(`Sesion: ${String(bot.authFolder || "Sin carpeta")}`);
+
+    if (bot.cachedPairingCode) {
+      lines.push(`Codigo en cache: ${bot.cachedPairingCode}`);
+      lines.push(`Expira aprox: ${formatDuration(bot.cachedPairingExpiresInMs || 0)}`);
+    }
+  }
+
+  return lines.join("\n");
 }
 
 export function parseSlotToken(value, maxSlots) {

@@ -39,8 +39,9 @@ export default {
     const activeCount = bots.filter((bot) => bot.connected).length;
     const linkedCount = bots.filter((bot) => bot.registered).length;
     const enabledCount = bots.filter((bot) => bot.enabled).length;
+    const waitingCount = bots.filter((bot) => bot.pairingPending || bot.connecting).length;
     const lines = bots.length
-      ? bots.map((bot) => buildSubbotCard(bot))
+      ? bots.map((bot) => buildSubbotCard(bot, { compact: true }))
       : ["No hay slots de subbot disponibles."];
 
     return sock.sendMessage(
@@ -48,25 +49,28 @@ export default {
       {
         text:
           `*PANEL SUBBOTS*\n\n` +
-          `Modo publico: *${publicLabel}*\n` +
-          `Capacidad: *${subbotAccess.maxSlots} slots*\n` +
-          `Slots libres: *${subbotAccess.availableSlots}*\n` +
-          `Slots activados: *${enabledCount}*\n` +
-          `Subbots vinculados: *${linkedCount}*\n` +
-          `Activos ahora: *${activeCount}*\n` +
-          `Hora actual: ${formatDateTime(Date.now())}\n` +
-          `En este chat: ${chatStatus}\n\n` +
+          `Resumen general\n` +
+          `- Modo publico: *${publicLabel}*\n` +
+          `- Capacidad total: *${subbotAccess.maxSlots} slots*\n` +
+          `- Slots libres: *${subbotAccess.availableSlots}*\n` +
+          `- Slots activados: *${enabledCount}*\n` +
+          `- Vinculados: *${linkedCount}*\n` +
+          `- Activos ahora: *${activeCount}*\n` +
+          `- Esperando o conectando: *${waitingCount}*\n` +
+          `- Hora actual: ${formatDateTime(Date.now())}\n` +
+          `- Vista: ${chatStatus}\n\n` +
+          `Estado de slots\n\n` +
           `${lines.join("\n\n")}\n\n` +
-          `Comandos:\n` +
-          `${prefix}subbot 519xxxxxxxxx\n` +
-          `${prefix}subbot 3 519xxxxxxxxx\n` +
-          `${prefix}subbot info 3\n` +
-          `${prefix}subbot liberar 3\n` +
-          `${prefix}subbot reset 3\n` +
-          `${prefix}subbot slots 20\n` +
-          `${prefix}subbots\n` +
-          `${prefix}subboton\n` +
-          `${prefix}subbotoff`,
+          `Atajos\n` +
+          `- ${prefix}subbot 519xxxxxxxxx\n` +
+          `- ${prefix}subbot 3 519xxxxxxxxx\n` +
+          `- ${prefix}subbot info 3\n` +
+          `- ${prefix}subbot liberar 3\n` +
+          `- ${prefix}subbot reset 3\n` +
+          `- ${prefix}subbot slots 20\n` +
+          `- ${prefix}subbots\n` +
+          `- ${prefix}subboton\n` +
+          `- ${prefix}subbotoff`,
         ...global.channelInfo,
       },
       quoted

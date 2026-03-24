@@ -87,8 +87,8 @@ export default {
         {
           text:
             `*INFO SUBBOT ${slot}*\n\n` +
-            `${buildSubbotCard(bot)}\n\n` +
-            `En este chat: ${chatStatus}`,
+            `${buildSubbotCard(bot, { compact: false, showSensitive: true })}\n\n` +
+            `Vista actual: ${chatStatus}`,
           ...global.channelInfo,
         },
         quoted
