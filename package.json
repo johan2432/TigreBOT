@@ -19,6 +19,7 @@
     "@whiskeysockets/baileys": "npm:wileys@latest",
     "axios": "^1.6.0",
     "chalk": "^4.1.2",
+    "dotenv": "^16.4.7",
     "figlet": "^1.9.3",
     "fluent-ffmpeg": "^2.1.2",
     "pino": "^9.13.1",

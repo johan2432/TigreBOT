@@ -6,6 +6,7 @@
 import * as baileys from "@whiskeysockets/baileys";
 import pino from "pino";
 import chalk from "chalk";
+import dotenv from "dotenv";
 import readline from "readline";
 import fs from "fs";
 import path from "path";
@@ -32,6 +33,8 @@ import {
 } from "./lib/autoclean.js";
 import { applyStoredRuntimeVars } from "./lib/runtime-vars.js";
 import { touchEconomyProfile } from "./commands/economia/_shared.js";
+
+dotenv.config();
 
 const makeWASocket =
   (typeof baileys.makeWASocket === "function" && baileys.makeWASocket) ||
