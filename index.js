@@ -1383,10 +1383,18 @@ let usageStatsSaveTimer = null;
 let managedBotSyncInterval = null;
 let autoCleanInterval = null;
 let dashboardServer = null;
+const DASHBOARD_AUTO_ENABLED = ["1", "true", "yes", "on"].includes(
+  String(process.env.DASHBOARD_ENABLED || "").trim().toLowerCase()
+);
+const DASHBOARD_AUTO_PORT = Math.max(
+  1,
+  Math.min(65535, Number(process.env.DASHBOARD_PORT || 8787) || 8787)
+);
+const DASHBOARD_AUTO_HOST = String(process.env.DASHBOARD_HOST || "0.0.0.0").trim() || "0.0.0.0";
 let dashboardState = {
-  enabled: false,
-  port: 8787,
-  host: "0.0.0.0",
+  enabled: DASHBOARD_AUTO_ENABLED,
+  port: DASHBOARD_AUTO_PORT,
+  host: DASHBOARD_AUTO_HOST,
 };
 
 function scheduleUsageStatsSave() {
