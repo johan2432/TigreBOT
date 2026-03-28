@@ -684,7 +684,7 @@ async function sendAudioFile(sock, from, quoted, { filePath, fileName, mimetype,
 }
 
 export default {
-  command: ["ytmp3", "play", "ytdlmp3"],
+  command: ["ytmp3"],
   category: "descarga",
 
   run: async (ctx) => {
