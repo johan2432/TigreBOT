@@ -8,9 +8,9 @@ import { chargeDownloadRequest, refundDownloadCharge } from "../economia/downloa
 
 const LEGACY_DVYER_BASE_URL = "https://dv-yer-api.online";
 const PREFERRED_DVYER_BASE_URL = "https://dvyer-api.onrender.com";
-const REQUEST_TIMEOUT = 120000;
+const REQUEST_TIMEOUT = 15 * 60 * 1000;
 const SEARCH_TIMEOUT = 45000;
-const MAX_FILE_BYTES = 220 * 1024 * 1024;
+const MAX_FILE_BYTES = 800 * 1024 * 1024;
 const MIN_FILE_BYTES = 20000;
 const TMP_ROOT = path.join(os.tmpdir(), "dvyer-app-downloads");
 const COOLDOWN_TIME = 15 * 1000;
@@ -233,6 +233,31 @@ function isHttpUrl(value) {
   return /^https?:\/\//i.test(String(value || "").trim());
 }
 
+function parseSelectionInput(value) {
+  const raw = cleanText(value);
+  const patterns = [
+    /^--pick=(\d+)\s+(.+)$/i,
+    /^pick[:=](\d+)\s+(.+)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    if (!match) continue;
+
+    return {
+      pick: Math.max(1, Math.min(10, Number(match[1] || 1))),
+      target: cleanText(match[2] || ""),
+      explicitPick: true,
+    };
+  }
+
+  return {
+    pick: 1,
+    target: raw,
+    explicitPick: false,
+  };
+}
+
 function pickApiDownloadUrl(data) {
   return (
     data?.download_url_full ||
@@ -343,11 +368,11 @@ async function requestSearchResults(input, config) {
   return results;
 }
 
-async function requestDownloadMeta(input, config) {
+async function requestDownloadMeta(input, config, options = {}) {
   const params = {
     mode: "link",
     lang: "es",
-    pick: 1,
+    pick: Math.max(1, Math.min(10, Number(options?.pick || 1))),
   };
 
   if (isHttpUrl(input)) params.url = input;
@@ -377,7 +402,6 @@ async function requestDownloadMeta(input, config) {
     description: cleanText(data?.description || "") || null,
     sizeBytes: Number(data?.size_bytes || data?.content_length || data?.filesize_bytes || 0) || null,
     downloadUrl,
-    appUrl: String(data?.app_url || input || "").trim() || null,
     packageName: String(data?.package_name || "").trim() || null,
   };
 }
@@ -513,7 +537,7 @@ async function sendSearchPicker(ctx, query, results, config) {
       `${config.rowLabel} | ${String(result.format || config.defaultExtension).toUpperCase()} | ${result.version || "Sin version"}${humanBytes(result.filesize_bytes) ? ` | ${humanBytes(result.filesize_bytes)}` : ""}`,
       72
     ),
-    id: `${prefix}${config.primaryCommand} ${String(result.app_url || result.download_query || query).trim()}`,
+    id: `${prefix}${config.primaryCommand} --pick=${index + 1} ${query}`,
   }));
 
   let thumbBuffer = null;
@@ -584,7 +608,7 @@ async function sendSearchPicker(ctx, query, results, config) {
       {
         text:
           `Resultados para: ${clipText(query, 80)}\n\n${fallbackText}\n\n` +
-          `Toca o copia uno de los comandos para descargar desde ${config.name}.`,
+          `Toca o copia uno de los comandos para descargar.`,
         ...global.channelInfo,
       },
       quoted
@@ -620,8 +644,8 @@ async function sendLargeFileLink(sock, from, quoted, info, config) {
     {
       text:
         `*FSOCIETY BOT*\n\n` +
-        `El ${config.tooLargeLabel} es demasiado grande para enviarlo directo por WhatsApp.${sizeText ? `\nTamano: *${sizeText}*` : ""}\n\n` +
-        `Descarga aqui:\n${info.downloadUrl}`,
+        `El ${config.tooLargeLabel} supera el limite de envio directo.${sizeText ? `\nTamano: *${sizeText}*` : ""}\n\n` +
+        `Enlace interno de descarga:\n${info.downloadUrl}`,
       ...global.channelInfo,
     },
     quoted
@@ -636,7 +660,7 @@ export function buildDvyerAppCommand(kind) {
     name: config.primaryCommand,
     command: commandNames,
     category: "descarga",
-    description: `Busca y descarga ${config.name} usando DVYER API.`,
+    description: `Busca y descarga ${config.name}.`,
 
     run: async (ctx) => {
       const { sock, from, settings } = ctx;
@@ -663,7 +687,9 @@ export function buildDvyerAppCommand(kind) {
       cooldowns.set(userId, Date.now() + COOLDOWN_TIME);
 
       try {
-        const userInput = cleanText(resolveUserInput(ctx));
+        const parsedInput = parseSelectionInput(resolveUserInput(ctx));
+        const userInput = parsedInput.target;
+
         if (!userInput) {
           cooldowns.delete(userId);
           return sock.sendMessage(
@@ -676,7 +702,7 @@ export function buildDvyerAppCommand(kind) {
           );
         }
 
-        if (!isHttpUrl(userInput)) {
+        if (!parsedInput.explicitPick && !isHttpUrl(userInput)) {
           const results = await requestSearchResults(userInput, config);
           await sendSearchPicker({ sock, from, quoted, settings }, userInput, results, config);
           cooldowns.delete(userId);
@@ -698,13 +724,15 @@ export function buildDvyerAppCommand(kind) {
         await sock.sendMessage(
           from,
           {
-            text: `${config.preparing}\n\nAPI: ${apiBaseLabel()}\nEntrada: ${userInput}`,
+            text: `${config.preparing}\n\nEntrada: ${userInput}`,
             ...global.channelInfo,
           },
           quoted
         );
 
-        downloadInfo = await requestDownloadMeta(userInput, config);
+        downloadInfo = await requestDownloadMeta(userInput, config, {
+          pick: parsedInput.pick,
+        });
         await sendPreviewCard(sock, from, quoted, downloadInfo, config);
 
         if (downloadInfo.sizeBytes && downloadInfo.sizeBytes > MAX_FILE_BYTES) {
