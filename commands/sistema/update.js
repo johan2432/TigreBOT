@@ -909,6 +909,7 @@ async function performGitPullUpdate({ settings, sock, from, quoted }) {
 
     const currentBranch = (await runCommand("git", ["branch", "--show-current"])).stdout.trim() || "main";
     const oldHead = (await runCommand("git", ["rev-parse", "--short", "HEAD"])).stdout.trim();
+    await runCommand("git", ["fetch", "--prune", "origin", currentBranch]);
     const pullResult = await runCommand("git", [
       "pull",
       "--ff-only",
@@ -992,6 +993,51 @@ async function performGitPullUpdate({ settings, sock, from, quoted }) {
   }
 }
 
+async function performPreferredUpdate({
+  settings,
+  sock,
+  from,
+  quoted,
+  branchHint = "",
+}) {
+  const gitRepoAvailable = await isInsideGitWorkTree();
+
+  if (gitRepoAvailable) {
+    try {
+      return await performGitPullUpdate({ settings, sock, from, quoted });
+    } catch (gitError) {
+      const source = await resolveUpdateSourceSafe(branchHint);
+      if (!source) {
+        throw gitError;
+      }
+
+      const fallbackResult = await performArchiveUpdate({
+        settings,
+        sock,
+        from,
+        quoted,
+        branchHint,
+        source,
+      });
+
+      return {
+        ...fallbackResult,
+        fallbackNote:
+          `git pull fallo y use GitHub directo como respaldo.\n` +
+          `Motivo: ${String(gitError?.message || gitError || "sin detalle").slice(0, 220)}`,
+      };
+    }
+  }
+
+  return await performArchiveUpdate({
+    settings,
+    sock,
+    from,
+    quoted,
+    branchHint,
+  });
+}
+
 async function performArchiveUpdate({
   settings,
   sock,
@@ -1072,7 +1118,11 @@ async function buildUpdateInfo(settings, msg, from, esOwner) {
     head,
     status,
     restartMode,
-    updateMode: source ? "GitHub directo" : "sin origen configurado",
+    updateMode: gitRepoAvailable
+      ? "git pull (preferido)"
+      : source
+        ? "GitHub directo"
+        : "sin origen configurado",
   };
 }
 
@@ -1081,7 +1131,7 @@ export default {
   command: ["update", "actualizar", "actualiza", "upgrade"],
   category: "sistema",
   description:
-    "Actualiza el bot descargando la ultima version directo desde GitHub; puede reiniciar o dejar los cambios listos para el siguiente reinicio",
+    "Actualiza el bot con git pull cuando el repo local esta disponible; si falla usa GitHub directo como respaldo",
 
   run: async ({ sock, msg, from, args = [], esOwner, settings }) => {
     const quoted = msg?.key ? { quoted: msg } : undefined;
@@ -1175,6 +1225,7 @@ export default {
       const restartMode = getRestartMode();
       const allowAutomaticRestart = forceRestart && !requestedNoRestart;
       const skipRestart = !allowAutomaticRestart;
+      const gitRepoAvailable = await isInsideGitWorkTree();
 
       await sock.sendMessage(
         from,
@@ -1182,15 +1233,15 @@ export default {
           text:
             "*UPDATE BOT*\n\n" +
             (skipRestart
-              ? "Descargando la ultima version directo desde GitHub en modo seguro, sin reiniciar el proceso...\n"
-              : "Descargando la ultima version directo desde GitHub...\n") +
+              ? `${gitRepoAvailable ? "Actualizando con git pull en modo seguro" : "Descargando la ultima version desde GitHub"} sin reiniciar el proceso...\n`
+              : `${gitRepoAvailable ? "Actualizando con git pull" : "Descargando la ultima version desde GitHub"}...\n`) +
             `Entorno: *${restartMode.label}*`,
           ...global.channelInfo,
         },
         quoted
       );
 
-      const updateResult = await performArchiveUpdate({
+      const updateResult = await performPreferredUpdate({
         settings,
         sock,
         from,
@@ -1240,6 +1291,7 @@ export default {
               `${depsSummary}\n` +
               `${updateResult.stashSummary}\n` +
               `Detalle: ${updateResult.detailLine}\n` +
+              `${updateResult.fallbackNote ? `${updateResult.fallbackNote}\n` : ""}` +
               "Aplicacion: *sin reinicio*\n\n" +
               (restartNeeded
                 ? "Los archivos ya se actualizaron dentro del VPS, pero los cambios de codigo o dependencias no se cargan por completo hasta usar `.restart` o reiniciar desde tu panel."
@@ -1265,6 +1317,7 @@ export default {
               `${depsSummary}\n` +
               `${updateResult.stashSummary}\n` +
               `Detalle: ${updateResult.detailLine}\n` +
+              `${updateResult.fallbackNote ? `${updateResult.fallbackNote}\n` : ""}` +
               "Aplicacion: *reinicio manual requerido*\n\n" +
               "Este hosting no usa reinicio interno seguro desde el bot. Los archivos ya quedaron actualizados, pero debes reiniciar desde tu panel, PM2 o consola cuando quieras cargar el codigo nuevo.",
             ...global.channelInfo,
@@ -1287,6 +1340,7 @@ export default {
             `${depsSummary}\n` +
             `${updateResult.stashSummary}\n` +
             `Detalle: ${updateResult.detailLine}\n` +
+            `${updateResult.fallbackNote ? `${updateResult.fallbackNote}\n` : ""}` +
             `Reinicio: *${restartMode.label}*\n\n` +
             "Reiniciando el bot en unos segundos.\n" +
             "La sesion de WhatsApp se conserva, aunque puede haber una reconexion breve.",
@@ -1314,6 +1368,7 @@ export default {
               `${depsSummary}\n` +
               `${updateResult.stashSummary}\n` +
               `Detalle: ${updateResult.detailLine}\n` +
+              `${updateResult.fallbackNote ? `${updateResult.fallbackNote}\n` : ""}` +
               "Aplicacion: *reinicio manual requerido*\n\n" +
               "Bloquee el reinicio interno para no tumbar tu servidor. Reinicia manualmente cuando quieras cargar el codigo nuevo.",
             ...global.channelInfo,

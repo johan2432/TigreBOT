@@ -85,6 +85,7 @@ const BOT_HEALTHCHECK_INTERVAL_MS = 30 * 1000;
 const BOT_CONNECTING_STALE_MS = 2 * 60 * 1000;
 const BOT_PAIRING_STALE_MS = 2 * 60 * 1000;
 const BOT_DEGRADED_SOCKET_STALE_MS = 90 * 1000;
+const SECONDARY_BOT_START_DELAY_MS = 2500;
 const FATAL_ERROR_WINDOW_MS = 2 * 60 * 1000;
 const FATAL_ERROR_THRESHOLD = 3;
 const logger = pino({ level: "silent" });
@@ -1474,6 +1475,7 @@ let managedBotSyncInterval = null;
 let autoCleanInterval = null;
 let botHealthCheckInterval = null;
 let dashboardServer = null;
+let secondaryBotStartInProgress = false;
 const WEB_BRIDGE_TOKEN = String(process.env.WEB_BRIDGE_TOKEN || "").trim();
 
 function parseBooleanEnv(name, fallback = false) {
@@ -4739,6 +4741,16 @@ function getMainBotState() {
   return botStates.get("main") || null;
 }
 
+function isMainBotLiveReady() {
+  const mainBotState = getMainBotState();
+  if (!mainBotState) return false;
+
+  return Boolean(
+    mainBotState.connectedAt &&
+      (mainBotState?.sock?.user?.id || isBotRegistered(mainBotState))
+  );
+}
+
 function isMainBotReady() {
   const mainBotState = getMainBotState();
   if (mainBotState && Boolean(isBotRegistered(mainBotState) || mainBotState?.sock?.user?.id)) {
@@ -4747,6 +4759,34 @@ function isMainBotReady() {
 
   const persistedMain = readPersistedBotRuntimeState("main");
   return Boolean(persistedMain?.registered || persistedMain?.connected);
+}
+
+function shouldDelaySecondaryStartup(config = {}, botState = null) {
+  if (SPLIT_PROCESS_MODE || !config || config.id === "main") {
+    return false;
+  }
+
+  if (botState?.sock || botState?.connecting || botState?.reconnectTimer) {
+    return false;
+  }
+
+  if (isMainBotLiveReady()) {
+    return false;
+  }
+
+  const mainBotState = getMainBotState();
+  if (!mainBotState) {
+    return false;
+  }
+
+  return Boolean(
+    mainBotState.connecting ||
+      mainBotState.bootStartedAt ||
+      mainBotState.reconnectTimer ||
+      ["", "booting", "connecting", "reconnecting"].includes(
+        String(mainBotState.connectionState || "").trim().toLowerCase()
+      )
+  );
 }
 
 function shouldManagedProcessStartBot(config = {}) {
@@ -4941,35 +4981,61 @@ async function syncManagedProcessBots() {
   syncSettingsFromDisk();
 
   for (const config of getManagedProcessBotConfigs()) {
-    const botState = ensureBotState(config);
-    botState.config = {
-      ...botState.config,
-      ...config,
-    };
+    try {
+      const botState = ensureBotState(config);
+      botState.config = {
+        ...botState.config,
+        ...config,
+      };
 
-    if (!shouldManagedProcessStartBot(config)) {
-      if (botState.sock || botState.connecting || botState.reconnectTimer) {
-        stopLocalManagedBot(botState, config.enabled === false ? "slot_apagado" : "esperando_sesion");
-      } else {
-        writePersistedBotRuntimeState(botState);
+      if (!shouldManagedProcessStartBot(config)) {
+        if (botState.sock || botState.connecting || botState.reconnectTimer) {
+          stopLocalManagedBot(botState, config.enabled === false ? "slot_apagado" : "esperando_sesion");
+        } else {
+          writePersistedBotRuntimeState(botState);
+        }
+        continue;
       }
-      continue;
-    }
 
-    if (!botState.sock && !botState.connecting && !botState.reconnectTimer) {
-      await iniciarInstanciaBot(botState.config);
-    }
+      if (shouldDelaySecondaryStartup(config, botState)) {
+        botState.connectionState = "waiting_main_boot";
+        botState.bootStartedAt = 0;
+        writePersistedBotRuntimeState(botState);
+        continue;
+      }
 
-    if (
-      botState.sock &&
-      !isBotRegistered(botState) &&
-      shouldAutoRequestPairingCode(botState) &&
-      !botState.pairingRequested
-    ) {
-      await requestPairingCodeSafe(botState);
-    }
+      if (
+        !SPLIT_PROCESS_MODE &&
+        config.id !== "main" &&
+        secondaryBotStartInProgress &&
+        !botState.sock &&
+        !botState.connecting
+      ) {
+        botState.connectionState = "waiting_secondary_queue";
+        writePersistedBotRuntimeState(botState);
+        continue;
+      }
 
-    writePersistedBotRuntimeState(botState);
+      if (!botState.sock && !botState.connecting && !botState.reconnectTimer) {
+        await iniciarInstanciaBot(botState.config);
+      }
+
+      if (
+        botState.sock &&
+        !isBotRegistered(botState) &&
+        shouldAutoRequestPairingCode(botState) &&
+        !botState.pairingRequested
+      ) {
+        await requestPairingCodeSafe(botState);
+      }
+
+      writePersistedBotRuntimeState(botState);
+    } catch (error) {
+      console.error(
+        `[SYNC ${config?.id || "bot"}] Error sincronizando bot:`,
+        error?.message || error
+      );
+    }
   }
 }
 
@@ -5161,10 +5227,40 @@ async function startSecondaryBots() {
     return;
   }
 
-  for (const config of BOT_CONFIGS) {
-    if (config.id === "main") continue;
-    if (!shouldStartSecondaryBot(config)) continue;
-    await iniciarInstanciaBot(config);
+  if (secondaryBotStartInProgress || !isMainBotLiveReady()) {
+    return;
+  }
+
+  secondaryBotStartInProgress = true;
+
+  try {
+    let startedCount = 0;
+
+    for (const config of BOT_CONFIGS) {
+      if (config.id === "main") continue;
+      if (!shouldStartSecondaryBot(config)) continue;
+
+      const botState = ensureBotState(config);
+      if (botState.sock || botState.connecting || botState.reconnectTimer) {
+        continue;
+      }
+
+      if (startedCount > 0) {
+        await delay(SECONDARY_BOT_START_DELAY_MS);
+      }
+
+      try {
+        await iniciarInstanciaBot(config);
+        startedCount += 1;
+      } catch (error) {
+        console.error(
+          `[SECONDARY ${config?.id || "bot"}] Error iniciando subbot:`,
+          error?.message || error
+        );
+      }
+    }
+  } finally {
+    secondaryBotStartInProgress = false;
   }
 }
 
@@ -5816,7 +5912,9 @@ async function iniciarInstanciaBot(config) {
           writePersistedBotRuntimeState(botState);
 
           if (botState.config?.id === "main") {
-            await startSecondaryBots();
+            startSecondaryBots().catch((error) => {
+              console.error("[SECONDARY] Error iniciando subbots:", error?.message || error);
+            });
           }
         }
 
