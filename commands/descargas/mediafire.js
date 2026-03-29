@@ -5,7 +5,7 @@ import axios from "axios";
 import { pipeline } from "stream/promises";
 import { chargeDownloadRequest, refundDownloadCharge } from "../economia/download-access.js";
 
-const API_BASE = "https://dv-yer-api.online";
+const API_BASE = "https://dvyer-api.onrender.com";
 const API_MEDIAFIRE_URL = `${API_BASE}/mediafire`;
 const COOLDOWN_TIME = 15 * 1000;
 const REQUEST_TIMEOUT = 120000;
@@ -351,7 +351,7 @@ export default {
       await sock.sendMessage(
         from,
         {
-          text: `Preparando MediaFire...\n\nAPI: ${API_BASE}`,
+          text: `Preparando MediaFire...\n\nProcesando tu enlace...`,
           ...global.channelInfo,
         },
         quoted
@@ -386,4 +386,3 @@ export default {
     }
   },
 };
-
