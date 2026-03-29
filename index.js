@@ -1838,11 +1838,36 @@ function markBotSendError(botState, error) {
   ).slice(0, 220);
 }
 
+function setActiveCommandAbortController(botState, abortController) {
+  if (!botState) return;
+  botState.activeCommandAbortController = abortController || null;
+}
+
+function abortActiveCommand(botState, reason = "cancelled") {
+  const abortController = botState?.activeCommandAbortController;
+  if (!abortController || typeof abortController.abort !== "function") {
+    return false;
+  }
+
+  try {
+    if (!abortController.signal?.aborted) {
+      abortController.abort(new Error(String(reason || "cancelled")));
+    }
+  } catch {
+    try {
+      abortController.abort();
+    } catch {}
+  }
+
+  return true;
+}
+
 function clearActiveCommandState(botState) {
   if (!botState) return;
   botState.activeCommandName = "";
   botState.activeCommandStartedAt = 0;
   botState.activeCommandTimeoutMs = 0;
+  botState.activeCommandAbortController = null;
 }
 
 function startCommandTracking(botState, commandName, timeoutMs) {
@@ -2045,12 +2070,14 @@ function ensureBotState(config) {
     activeCommandName: "",
     activeCommandStartedAt: 0,
     activeCommandTimeoutMs: 0,
+    activeCommandAbortController: null,
     groupCache: new Map(),
     store: createStoreForBot(config.id),
     activeDownloadJobs: new Map(),
     downloadQueueCounter: 0,
     persistedStateWriteTimer: null,
     persistedStateWritePending: false,
+    socketRecoveryTimer: null,
   };
 
   botStates.set(config.id, state);
@@ -2280,6 +2307,12 @@ function clearReconnectTimer(botState) {
   if (!botState?.reconnectTimer) return;
   clearTimeout(botState.reconnectTimer);
   botState.reconnectTimer = null;
+}
+
+function clearSocketRecoveryTimer(botState) {
+  if (!botState?.socketRecoveryTimer) return;
+  clearTimeout(botState.socketRecoveryTimer);
+  botState.socketRecoveryTimer = null;
 }
 
 function removeAuthFolder(authFolder) {
@@ -3197,6 +3230,7 @@ function scheduleReconnect(botState, ms = 2500) {
   }
 
   clearReconnectTimer(botState);
+  clearSocketRecoveryTimer(botState);
   botState.connectionState = "reconnecting";
   markBotSocketActivity(botState, "reconnecting");
   botState.reconnectTimer = setTimeout(() => {
@@ -3204,6 +3238,72 @@ function scheduleReconnect(botState, ms = 2500) {
     iniciarInstanciaBot(botState.config);
   }, ms);
   botState.reconnectTimer.unref?.();
+}
+
+function scheduleSocketRecoveryCheck(
+  botState,
+  sock,
+  reason = "socket_closed",
+  delayMs = 1500
+) {
+  if (!botState || !sock) {
+    return;
+  }
+
+  clearSocketRecoveryTimer(botState);
+  botState.socketRecoveryTimer = setTimeout(() => {
+    botState.socketRecoveryTimer = null;
+
+    if (!botState.sock || botState.sock !== sock) {
+      return;
+    }
+
+    if (botState.reconnectTimer || botState.connecting || isReplacementBlocked(botState)) {
+      return;
+    }
+
+    if (!shouldManagedProcessStartBot(botState.config)) {
+      return;
+    }
+
+    recycleBotInstance(botState, reason);
+    scheduleReconnect(botState, getReconnectDelay(botState, false));
+  }, Math.max(500, Number(delayMs || 1500)));
+  botState.socketRecoveryTimer.unref?.();
+}
+
+function attachSocketLifecycleWatchers(botState, sock) {
+  if (!sock || sock.__dvyerRecoveryWatchersAttached) {
+    return;
+  }
+
+  sock.__dvyerRecoveryWatchersAttached = true;
+  const rawSocket = sock.ws;
+
+  if (!rawSocket || typeof rawSocket.on !== "function") {
+    return;
+  }
+
+  rawSocket.on("close", (code) => {
+    const normalizedCode = Number(code || 0);
+    markBotSocketActivity(botState, `ws.close:${normalizedCode || "unknown"}`);
+    scheduleSocketRecoveryCheck(
+      botState,
+      sock,
+      `ws_close:${normalizedCode || "unknown"}`,
+      1800
+    );
+  });
+
+  rawSocket.on("error", (error) => {
+    markBotSocketActivity(botState, "ws.error");
+    console.warn(`${getBotTag(botState)} WebSocket error:`, error?.message || error);
+
+    const readyState = Number(sock.ws?.readyState);
+    if (botState?.connectedAt || (Number.isFinite(readyState) && readyState >= 2)) {
+      scheduleSocketRecoveryCheck(botState, sock, "ws_error", 1200);
+    }
+  });
 }
 
 function maskDashboardNumber(value = "") {
@@ -4543,9 +4643,11 @@ function stopLocalManagedBot(botState, reason = "disabled") {
   if (!botState) return;
 
   clearReconnectTimer(botState);
+  clearSocketRecoveryTimer(botState);
   clearPairingResetTimer(botState);
   clearProfileApplyTimer(botState);
   abortActiveDownloadJobs(botState, `bot_stopped:${reason}`);
+  abortActiveCommand(botState, `bot_stopped:${reason}`);
 
   try {
     botState.sock?.end?.();
@@ -4570,9 +4672,11 @@ function recycleBotInstance(botState, reason = "recovery") {
   if (!botState) return false;
 
   clearReconnectTimer(botState);
+  clearSocketRecoveryTimer(botState);
   clearPairingResetTimer(botState);
   clearProfileApplyTimer(botState);
   abortActiveDownloadJobs(botState, `bot_recycled:${reason}`);
+  abortActiveCommand(botState, `bot_recycled:${reason}`);
 
   try {
     botState.sock?.end?.();
@@ -5381,6 +5485,7 @@ async function handleIncomingMessages(botState, sock, messages) {
       const timeoutMs = resolveCommandTimeout(cmd);
       const abortController = createTaskAbortController();
       commandContext.abortSignal = abortController?.signal || null;
+      setActiveCommandAbortController(botState, abortController);
       startCommandTracking(botState, commandData.commandName, timeoutMs);
       await runTaskWithTimeout(
         `${getBotTag(botState)} comando ${commandData.commandName}`,
@@ -5451,6 +5556,7 @@ async function iniciarInstanciaBot(config) {
     botState.sock = wrapSocketSendMessage(botState, sock);
     botState.authState = authState;
     markBotSocketActivity(botState, "socket_created");
+    attachSocketLifecycleWatchers(botState, botState.sock);
 
     if (botState.store?.bind) {
       botState.store.bind(botState.sock.ev);
@@ -5552,6 +5658,7 @@ async function iniciarInstanciaBot(config) {
             botState.reconnectTimer = null;
           }
 
+          clearSocketRecoveryTimer(botState);
           clearReplacementBlock(botState);
           botState.reconnectAttempts = 0;
           botState.connectedAt = Date.now();
@@ -5591,11 +5698,17 @@ async function iniciarInstanciaBot(config) {
             removeAuthFolder(config.authFolder);
           }
 
+          clearSocketRecoveryTimer(botState);
           botState.sock = null;
+          botState.connecting = false;
+          botState.connectedAt = 0;
           botState.lastDisconnectAt = Date.now();
           botState.lastDisconnectCode = Number(code || 0);
           botState.connectionState = "close";
+          botState.bootStartedAt = 0;
           clearProfileApplyTimer(botState);
+          abortActiveDownloadJobs(botState, `connection_closed:${code || "unknown"}`);
+          abortActiveCommand(botState, `connection_closed:${code || "unknown"}`);
           resetPairingCache(botState);
           writePersistedBotRuntimeState(botState);
 
@@ -5700,12 +5813,22 @@ async function iniciarInstanciaBot(config) {
       }
     });
   } catch (err) {
+    clearSocketRecoveryTimer(botState);
+    abortActiveDownloadJobs(botState, "start_error");
+    abortActiveCommand(botState, "start_error");
+    botState.sock = null;
     botState.connectionState = "start_error";
+    botState.connectedAt = 0;
+    botState.bootStartedAt = 0;
     botState.lastDisconnectAt = Date.now();
     botState.lastSocketEventAt = Date.now();
     botState.lastSocketEvent = "start_error";
     console.error(`${getBotTag(config)} Error iniciando bot:`, err);
     writePersistedBotRuntimeState(botState);
+
+    if (shouldManagedProcessStartBot(botState.config) && !isReplacementBlocked(botState)) {
+      scheduleReconnect(botState, getReconnectDelay(botState, false));
+    }
   } finally {
     botState.connecting = false;
   }
