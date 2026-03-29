@@ -175,10 +175,13 @@ export default {
 
     const config = getConfig(update.id);
     if (!config.enabled) return;
-    const ownerNumbers = Array.isArray(settings?.ownerNumbers)
-      ? settings.ownerNumbers.map((item) => normalizePrefix(item)).filter(Boolean)
-      : [];
-    const botNumber = normalizePrefix(sock?.user?.id || "");
+    const ownerNumbers = [
+      settings?.ownerNumber,
+      ...(Array.isArray(settings?.ownerNumbers) ? settings.ownerNumbers : []),
+    ]
+      .map((item) => normalizePrefix(item))
+      .filter(Boolean);
+    const botNumber = normalizeJidDigits(sock?.user?.id || "") || normalizePrefix(sock?.user?.id || "");
 
     let botIsAdmin = false;
     let metadata = null;

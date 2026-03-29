@@ -2187,6 +2187,66 @@ function getReconnectDelay(botState, loggedOut = false) {
   return Math.min(30_000, 2500 * 2 ** (attempts - 1));
 }
 
+function getDisconnectReasonText(lastDisconnect = null) {
+  const candidates = [
+    lastDisconnect?.error?.output?.payload?.message,
+    lastDisconnect?.error?.output?.payload?.error?.message,
+    typeof lastDisconnect?.error?.output?.payload?.error === "string"
+      ? lastDisconnect?.error?.output?.payload?.error
+      : "",
+    lastDisconnect?.error?.message,
+    typeof lastDisconnect?.error?.toString === "function"
+      ? lastDisconnect.error.toString()
+      : "",
+  ];
+
+  for (const value of candidates) {
+    const text = String(value || "").trim();
+    if (text) {
+      return text;
+    }
+  }
+
+  return "";
+}
+
+function getDisconnectStatusCode(lastDisconnect = null) {
+  const candidates = [
+    lastDisconnect?.error?.output?.statusCode,
+    lastDisconnect?.error?.data?.statusCode,
+    lastDisconnect?.error?.output?.payload?.statusCode,
+    lastDisconnect?.error?.statusCode,
+    lastDisconnect?.statusCode,
+  ];
+
+  for (const value of candidates) {
+    const code = Number(value);
+    if (Number.isFinite(code) && code > 0) {
+      return code;
+    }
+  }
+
+  const reasonText = getDisconnectReasonText(lastDisconnect);
+  if (!reasonText) {
+    return 0;
+  }
+
+  if (/logged\s*out/i.test(reasonText)) {
+    return Number(DisconnectReason.loggedOut || 401) || 401;
+  }
+
+  if (/connection\s*replaced|replaced\s*by\s*new/i.test(reasonText)) {
+    return Number(DisconnectReason.connectionReplaced || 440) || 440;
+  }
+
+  const explicitCode = reasonText.match(/\b(4\d{2}|5\d{2})\b/);
+  if (explicitCode?.[1]) {
+    return Number(explicitCode[1]) || 0;
+  }
+
+  return 0;
+}
+
 function refreshBotConfigCache() {
   ensureSubbotSettings(settings);
   ensureSystemSettings(settings);
@@ -5761,18 +5821,21 @@ async function iniciarInstanciaBot(config) {
         }
 
         if (connection === "close") {
-          const code =
-            lastDisconnect?.error?.output?.statusCode ||
-            lastDisconnect?.error?.data?.statusCode ||
-            0;
+          const code = getDisconnectStatusCode(lastDisconnect);
+          const reasonText = getDisconnectReasonText(lastDisconnect);
 
           markBotSocketActivity(botState, `connection.close:${code || "unknown"}`);
-          console.log(`${getBotTag(botState)} Conexion cerrada:`, code);
+          console.log(
+            `${getBotTag(botState)} Conexion cerrada:`,
+            code,
+            reasonText ? `(${reasonText.slice(0, 160)})` : ""
+          );
 
           const loggedOut =
             code === 401 || code === DisconnectReason.loggedOut;
           const connectionReplaced =
             code === 440 || code === DisconnectReason.connectionReplaced;
+          const restartRequired = code === DisconnectReason.restartRequired;
 
           if (loggedOut) {
             removeAuthFolder(config.authFolder);
@@ -5813,6 +5876,12 @@ async function iniciarInstanciaBot(config) {
                 `en otro VPS, hosting o dispositivo vinculado.`
               )
             );
+            return;
+          }
+
+          if (restartRequired) {
+            botState.reconnectAttempts = 0;
+            scheduleReconnect(botState, 1200);
             return;
           }
 

@@ -2,6 +2,7 @@ import path from "path";
 import { createScheduledJsonStore } from "../../lib/json-store.js";
 import {
   findGroupParticipant,
+  normalizeJidDigits,
   runGroupParticipantAction,
 } from "../../lib/group-compat.js";
 
@@ -23,7 +24,7 @@ function ensureGroup(groupId) {
 }
 
 function normalizeParticipantNumber(value = "") {
-  return String(value || "").split("@")[0].split(":")[0].replace(/[^\d]/g, "");
+  return normalizeJidDigits(value);
 }
 
 export default {
@@ -57,10 +58,17 @@ export default {
     );
   },
 
-  onGroupUpdate: async ({ sock, update }) => {
+  onGroupUpdate: async ({ sock, update, settings }) => {
     if (!update?.id || update.action !== "add") return;
     const config = ensureGroup(update.id);
     if (!config.enabled) return;
+    const botNumber = normalizeJidDigits(sock?.user?.id || "");
+    const ownerNumbers = [
+      settings?.ownerNumber,
+      ...(Array.isArray(settings?.ownerNumbers) ? settings.ownerNumbers : []),
+    ]
+      .map((item) => normalizeJidDigits(item))
+      .filter(Boolean);
     let metadata = null;
 
     try {
@@ -69,6 +77,7 @@ export default {
 
     for (const participant of update.participants || []) {
       const number = normalizeParticipantNumber(participant);
+      if (!number || number === botNumber || ownerNumbers.includes(number)) continue;
       if (!config.prefixes.some((prefix) => number.startsWith(prefix))) continue;
 
       try {

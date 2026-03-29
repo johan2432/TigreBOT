@@ -4,6 +4,10 @@ import {
   readJson as readJsonFile,
   writeJsonAtomic,
 } from "../../lib/json-store.js";
+import {
+  normalizeJidDigits as normalizeCompatJidDigits,
+  normalizeJidUser as normalizeCompatJidUser,
+} from "../../lib/group-compat.js";
 
 const DB_DIR = path.join(process.cwd(), "database");
 
@@ -39,14 +43,11 @@ export function getQuoted(msg) {
 }
 
 export function normalizeJidUser(value = "") {
-  const jid = String(value || "").trim();
-  if (!jid) return "";
-  const [user] = jid.split("@");
-  return user.split(":")[0];
+  return normalizeCompatJidUser(value);
 }
 
 export function normalizeNumber(value = "") {
-  return normalizeJidUser(value).replace(/[^\d]/g, "");
+  return normalizeCompatJidDigits(value);
 }
 
 export function formatUserNumber(value = "") {
@@ -68,7 +69,13 @@ export function extractTargetUser({ args = [], msg, sender = "", includeSenderFa
   }
 
   const quotedParticipant =
+    msg?.quoted?.senderLid ||
+    msg?.quoted?.senderPhone ||
+    msg?.quoted?.sender ||
     msg?.quoted?.key?.participant ||
+    msg?.quoted?.key?.participantAlt ||
+    msg?.quoted?.key?.participantPn ||
+    msg?.quoted?.key?.participantLid ||
     msg?.quoted?.participant ||
     msg?.quoted?.key?.remoteJid ||
     "";
