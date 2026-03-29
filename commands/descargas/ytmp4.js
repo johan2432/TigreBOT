@@ -17,6 +17,11 @@ const API_VIDEO_URL = buildDvyerUrl(API_VIDEO_PATH);
 const API_VIDEO_LEGACY_URL = buildDvyerUrl(API_VIDEO_LEGACY_PATH);
 const API_VIDEO_ALT_URL = buildDvyerUrl(API_VIDEO_ALT_PATH);
 const API_SEARCH_URL = buildDvyerUrl(API_SEARCH_PATH);
+const VIDEO_SOURCES = [
+  { endpointUrl: API_VIDEO_URL, sourceLabel: "principal" },
+  { endpointUrl: API_VIDEO_LEGACY_URL, sourceLabel: "legacy" },
+  { endpointUrl: API_VIDEO_ALT_URL, sourceLabel: "alterna" },
+];
 
 const COOLDOWN_TIME = 15 * 1000;
 const VIDEO_QUALITY = "360p";
@@ -269,16 +274,11 @@ async function requestVideoLink(videoUrl, endpointUrl, sourceLabel, options = {}
 }
 
 async function resolveFastestVideoLink(videoUrl) {
-  const sources = [
-    { endpointUrl: API_VIDEO_URL, sourceLabel: "principal" },
-    { endpointUrl: API_VIDEO_LEGACY_URL, sourceLabel: "legacy" },
-    { endpointUrl: API_VIDEO_ALT_URL, sourceLabel: "alterna" },
-  ];
-  const controllers = sources.map(() => createAbortControllerSafe());
+  const controllers = VIDEO_SOURCES.map(() => createAbortControllerSafe());
 
   return await new Promise((resolve, reject) => {
     let settled = false;
-    let pending = sources.length;
+    let pending = VIDEO_SOURCES.length;
     const errors = [];
 
     const finishSuccess = (result, winnerIndex) => {
@@ -309,7 +309,7 @@ async function resolveFastestVideoLink(videoUrl) {
       );
     };
 
-    sources.forEach((source, index) => {
+    VIDEO_SOURCES.forEach((source, index) => {
       requestVideoLink(videoUrl, source.endpointUrl, source.sourceLabel, {
         signal: controllers[index]?.signal || null,
       })
@@ -349,13 +349,8 @@ async function resolveSearchCached(query) {
 
 async function resolveFastestVideoLinkCached(videoUrl) {
   const cacheKey = `ytdlmp4:${String(videoUrl || "").trim()}`;
-  const cached = getDownloadCache(cacheKey);
-  if (cached?.downloadUrl) return cached;
-
   return withInflightDedup(cacheKey, async () => {
-    const result = await resolveFastestVideoLink(videoUrl);
-    setDownloadCache(cacheKey, result);
-    return result;
+    return await resolveFastestVideoLink(videoUrl);
   });
 }
 
@@ -467,11 +462,12 @@ async function downloadVideoFromInternalLink(
 
 async function downloadVideoFromApi(videoUrl, outputPath, options = {}) {
   const signal = options?.signal || null;
+  const endpointUrl = String(options?.endpointUrl || API_VIDEO_URL).trim() || API_VIDEO_URL;
   throwIfAborted(signal);
 
   let response;
   try {
-    response = await axios.get(API_VIDEO_URL, {
+    response = await axios.get(endpointUrl, {
       responseType: "stream",
       timeout: REQUEST_TIMEOUT,
       signal,
@@ -562,6 +558,39 @@ async function downloadVideoFromApi(videoUrl, outputPath, options = {}) {
     size,
     fileName: fromHeader || path.basename(outputPath),
   };
+}
+
+async function downloadVideoFromApiWithFallbacks(videoUrl, outputPath, options = {}) {
+  const signal = options?.signal || null;
+  const errors = [];
+
+  for (const source of VIDEO_SOURCES) {
+    deleteFileSafe(outputPath);
+
+    try {
+      const downloaded = await downloadVideoFromApi(videoUrl, outputPath, {
+        ...options,
+        signal,
+        endpointUrl: source.endpointUrl,
+      });
+
+      return {
+        ...downloaded,
+        sourceLabel: `${source.sourceLabel}:file`,
+      };
+    } catch (error) {
+      if (signal?.aborted) {
+        throw buildAbortError(signal);
+      }
+
+      console.warn(`YTMP4 direct fallback ${source.sourceLabel}:`, error?.message || error);
+      errors.push(`${source.sourceLabel}: ${String(error?.message || error)}`);
+    }
+  }
+
+  throw new Error(
+    errors[0] || "No se pudo descargar el video desde ninguna ruta directa."
+  );
 }
 
 async function normalizeVideoForWhatsApp(inputPath, outputPath, options = {}) {
@@ -802,7 +831,7 @@ export default {
         console.log(
           `YTMP4 link fallback: ${linkError?.message || linkError}`
         );
-        downloaded = await downloadVideoFromApi(videoUrl, rawVideoFile, {
+        downloaded = await downloadVideoFromApiWithFallbacks(videoUrl, rawVideoFile, {
           signal: abortSignal,
         });
       }

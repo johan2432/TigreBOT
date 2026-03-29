@@ -17,6 +17,11 @@ const API_AUDIO_URL = buildDvyerUrl(API_AUDIO_PATH);
 const API_AUDIO_LEGACY_URL = buildDvyerUrl(API_AUDIO_LEGACY_PATH);
 const API_AUDIO_ALT_URL = buildDvyerUrl(API_AUDIO_ALT_PATH);
 const API_SEARCH_URL = buildDvyerUrl(API_SEARCH_PATH);
+const AUDIO_SOURCES = [
+  { endpointUrl: API_AUDIO_URL, sourceLabel: "principal" },
+  { endpointUrl: API_AUDIO_LEGACY_URL, sourceLabel: "legacy" },
+  { endpointUrl: API_AUDIO_ALT_URL, sourceLabel: "alterna" },
+];
 
 const COOLDOWN_TIME = 15 * 1000;
 const AUDIO_QUALITY = "128k";
@@ -341,16 +346,11 @@ async function requestAudioLink(videoUrl, endpointUrl, sourceLabel, options = {}
 }
 
 async function resolveFastestAudioLink(videoUrl) {
-  const sources = [
-    { endpointUrl: API_AUDIO_URL, sourceLabel: "principal" },
-    { endpointUrl: API_AUDIO_LEGACY_URL, sourceLabel: "legacy" },
-    { endpointUrl: API_AUDIO_ALT_URL, sourceLabel: "alterna" },
-  ];
-  const controllers = sources.map(() => createAbortControllerSafe());
+  const controllers = AUDIO_SOURCES.map(() => createAbortControllerSafe());
 
   return await new Promise((resolve, reject) => {
     let settled = false;
-    let pending = sources.length;
+    let pending = AUDIO_SOURCES.length;
     let firstSuccess = null;
     let preferredTimer = null;
     const errors = [];
@@ -404,7 +404,7 @@ async function resolveFastestAudioLink(videoUrl) {
       }
     };
 
-    sources.forEach((source, index) => {
+    AUDIO_SOURCES.forEach((source, index) => {
       requestAudioLink(videoUrl, source.endpointUrl, source.sourceLabel, {
         signal: controllers[index]?.signal || null,
       })
@@ -469,13 +469,8 @@ async function resolveSearchCached(query) {
 
 async function resolveFastestAudioLinkCached(videoUrl) {
   const cacheKey = `ytdlmp3:${String(videoUrl || "").trim()}`;
-  const cached = getDownloadCache(cacheKey);
-  if (cached?.downloadUrl) return cached;
-
   return withInflightDedup(cacheKey, async () => {
-    const result = await resolveFastestAudioLink(videoUrl);
-    setDownloadCache(cacheKey, result);
-    return result;
+    return await resolveFastestAudioLink(videoUrl);
   });
 }
 
@@ -598,11 +593,12 @@ async function downloadAudioFromInternalLink(
 
 async function downloadAudioFromApi(videoUrl, outputPath, options = {}) {
   const signal = options?.signal || null;
+  const endpointUrl = String(options?.endpointUrl || API_AUDIO_URL).trim() || API_AUDIO_URL;
   throwIfAborted(signal);
 
   let response;
   try {
-    response = await axios.get(API_AUDIO_URL, {
+    response = await axios.get(endpointUrl, {
       responseType: "stream",
       timeout: REQUEST_TIMEOUT,
       signal,
@@ -704,6 +700,39 @@ async function downloadAudioFromApi(videoUrl, outputPath, options = {}) {
     mimetype: audioMeta.mimetype,
     isMp3: audioMeta.isMp3,
   };
+}
+
+async function downloadAudioFromApiWithFallbacks(videoUrl, outputPath, options = {}) {
+  const signal = options?.signal || null;
+  const errors = [];
+
+  for (const source of AUDIO_SOURCES) {
+    deleteFileSafe(outputPath);
+
+    try {
+      const downloaded = await downloadAudioFromApi(videoUrl, outputPath, {
+        ...options,
+        signal,
+        endpointUrl: source.endpointUrl,
+      });
+
+      return {
+        ...downloaded,
+        sourceLabel: `${source.sourceLabel}:file`,
+      };
+    } catch (error) {
+      if (signal?.aborted) {
+        throw buildAbortError(signal);
+      }
+
+      console.warn(`YTMP3 direct fallback ${source.sourceLabel}:`, error?.message || error);
+      errors.push(`${source.sourceLabel}: ${String(error?.message || error)}`);
+    }
+  }
+
+  throw new Error(
+    errors[0] || "No se pudo descargar el audio desde ninguna ruta directa."
+  );
 }
 
 async function convertToMp3(inputPath, outputPath, options = {}) {
@@ -943,7 +972,7 @@ export default {
         console.log(
           `YTMP3 link fallback: ${linkError?.message || linkError}`
         );
-        downloadedAudio = await downloadAudioFromApi(videoUrl, sourceFile, {
+        downloadedAudio = await downloadAudioFromApiWithFallbacks(videoUrl, sourceFile, {
           signal: abortSignal,
         });
       }
