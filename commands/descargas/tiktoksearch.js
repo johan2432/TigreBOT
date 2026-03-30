@@ -1,8 +1,8 @@
 import { searchTikTokVideos } from "./_searchFallbacks.js";
 import { chargeDownloadRequest, refundDownloadCharge } from "../economia/download-access.js";
 
-const RESULT_LIMIT = 4;
-const DEFAULT_CAROUSEL_COVER = "https://telegra.ph/file/24b24c495b5384b218b2f.jpg";
+const RESULT_LIMIT = 5;
+const DEFAULT_CAROUSEL_COVER = "https://i.ibb.co/5xrnyZhN/fsociety-bot-profile.png";
 
 function getPrefix(settings) {
   if (Array.isArray(settings?.prefix)) {
