@@ -5,6 +5,7 @@ import {
   getParticipantMentionJid,
   runGroupParticipantAction,
 } from "../../lib/group-compat.js";
+import { isWhitelistedUser } from "../../lib/group-whitelist.js";
 
 const DB_DIR = path.join(process.cwd(), "database");
 
@@ -180,6 +181,7 @@ export default {
 
     const sender = msg.sender || msg.key?.participant || from;
     if (!sender) return;
+    if (isWhitelistedUser(from, sender)) return;
     const mentionJid = getParticipantMentionJid(groupMetadata || {}, null, sender);
 
     const textRaw = extractText(msg.message);

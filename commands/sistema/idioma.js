@@ -1,16 +1,9 @@
-import path from "path";
-import { createScheduledJsonStore, getPrimaryPrefix } from "../../lib/json-store.js";
-
-const FILE = path.join(process.cwd(), "database", "languages.json");
-const store = createScheduledJsonStore(FILE, () => ({
-  chats: {},
-}));
-
-const SUPPORTED = {
-  es: "Espanol",
-  en: "English",
-  pt: "Portugues",
-};
+import { getPrimaryPrefix } from "../../lib/json-store.js";
+import {
+  getChatLanguage,
+  setChatLanguage,
+  listSupportedChatLanguages,
+} from "../../lib/chat-language.js";
 
 export default {
   name: "idioma",
@@ -24,7 +17,8 @@ export default {
     }
 
     const prefix = getPrimaryPrefix(settings);
-    const current = String(store.state.chats[from] || "es");
+    const SUPPORTED = listSupportedChatLanguages();
+    const current = getChatLanguage(from, "es");
     const next = String(args[0] || "").trim().toLowerCase();
 
     if (!next) {
@@ -46,8 +40,7 @@ export default {
       return sock.sendMessage(from, { text: "Idiomas disponibles: es, en, pt", ...global.channelInfo }, { quoted: msg });
     }
 
-    store.state.chats[from] = next;
-    store.scheduleSave();
+    setChatLanguage(from, next);
     return sock.sendMessage(from, { text: `Idioma actualizado a *${SUPPORTED[next]}*`, ...global.channelInfo }, { quoted: msg });
   },
 };

@@ -89,6 +89,8 @@ const SECONDARY_BOT_START_DELAY_MS = 2500;
 const FATAL_ERROR_WINDOW_MS = 2 * 60 * 1000;
 const FATAL_ERROR_THRESHOLD = 3;
 const RECONNECT_JITTER_RATIO = 0.2;
+const CONTACT_NAME_CACHE_TTL_MS = 10 * 60 * 1000;
+const CONTACT_NAME_CACHE_MAX_ENTRIES = 3000;
 const logger = pino({ level: "silent" });
 const FIXED_BROWSER = ["Windows", "Chrome", "114.0.5735.198"];
 
@@ -1015,6 +1017,41 @@ function serializeMessage(raw) {
 function getStoreContactName(botState, ...ids) {
   const contacts = botState?.store?.contacts;
   if (!contacts || typeof contacts !== "object") return "";
+  if (!(botState?.contactNameCache instanceof Map)) {
+    botState.contactNameCache = new Map();
+  }
+
+  const now = Date.now();
+  const cacheKeys = [];
+
+  for (const value of ids) {
+    const raw = String(value || "").trim();
+    if (!raw) continue;
+
+    const normalized = normalizeJidUser(raw);
+    cacheKeys.push(raw.toLowerCase());
+    if (normalized) {
+      cacheKeys.push(normalized.toLowerCase());
+      cacheKeys.push(`${normalized}@s.whatsapp.net`.toLowerCase());
+      cacheKeys.push(`${normalized}@lid`.toLowerCase());
+    }
+  }
+
+  for (const key of cacheKeys) {
+    const cached = botState.contactNameCache.get(key);
+    if (!cached) continue;
+    const cachedAt = Number(cached.cachedAt || 0);
+    const cachedName = String(cached.name || "").trim();
+
+    if (!cachedName || !cachedAt || now - cachedAt > CONTACT_NAME_CACHE_TTL_MS) {
+      botState.contactNameCache.delete(key);
+      continue;
+    }
+
+    botState.contactNameCache.delete(key);
+    botState.contactNameCache.set(key, cached);
+    return cachedName;
+  }
 
   for (const value of ids) {
     const raw = String(value || "").trim();
@@ -1034,6 +1071,21 @@ function getStoreContactName(botState, ...ids) {
       ).trim();
 
       if (name) {
+        const item = {
+          name,
+          cachedAt: now,
+        };
+
+        for (const key of cacheKeys) {
+          botState.contactNameCache.set(key, item);
+        }
+
+        while (botState.contactNameCache.size > CONTACT_NAME_CACHE_MAX_ENTRIES) {
+          const oldestKey = botState.contactNameCache.keys().next().value;
+          if (!oldestKey) break;
+          botState.contactNameCache.delete(oldestKey);
+        }
+
         return name;
       }
     }
@@ -2198,6 +2250,7 @@ function ensureBotState(config) {
     activeCommandTimeoutMs: 0,
     activeCommandAbortController: null,
     groupCache: new Map(),
+    contactNameCache: new Map(),
     store: createStoreForBot(config.id),
     activeDownloadJobs: new Map(),
     downloadQueueCounter: 0,
@@ -2592,6 +2645,7 @@ function releaseSubbotSlot(botState, options = {}) {
     releasedAt: releaseAt,
   };
   botState.groupCache?.clear?.();
+  botState.contactNameCache?.clear?.();
   botState.activeDownloadJobs?.clear?.();
 
   console.log(
@@ -2669,6 +2723,7 @@ function resetMainBotSession(botState, options = {}) {
   botState.bootStartedAt = 0;
   clearActiveCommandState(botState);
   botState.groupCache?.clear?.();
+  botState.contactNameCache?.clear?.();
   botState.activeDownloadJobs?.clear?.();
   botState.config = {
     ...botState.config,
@@ -4957,6 +5012,7 @@ function stopLocalManagedBot(botState, reason = "disabled") {
   botState.bootStartedAt = 0;
   clearActiveCommandState(botState);
   botState.groupCache?.clear?.();
+  botState.contactNameCache?.clear?.();
   botState.activeDownloadJobs?.clear?.();
   console.log(`${getBotTag(botState)} Detenido localmente (${reason})`);
   writePersistedBotRuntimeState(botState);
@@ -4985,6 +5041,7 @@ function recycleBotInstance(botState, reason = "recovery") {
   botState.connectionState = `recovery:${String(reason || "unknown").slice(0, 48)}`;
   botState.bootStartedAt = 0;
   botState.groupCache?.clear?.();
+  botState.contactNameCache?.clear?.();
   clearActiveCommandState(botState);
   botState.activeDownloadJobs?.clear?.();
   resetPairingCache(botState);

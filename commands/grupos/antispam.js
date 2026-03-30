@@ -5,6 +5,7 @@ import {
   getParticipantMentionJid,
   runGroupParticipantAction,
 } from "../../lib/group-compat.js";
+import { isWhitelistedUser } from "../../lib/group-whitelist.js";
 
 const DB_DIR = path.join(process.cwd(), "database");
 const FILE = path.join(DB_DIR, "antispam.json");
@@ -111,6 +112,7 @@ export default {
 
     // No castigar admins/owner
     if (esAdmin || esOwner) return;
+    if (isWhitelistedUser(from, sender)) return;
 
     const key = `${from}|${sender}`;
     const now = Date.now();
