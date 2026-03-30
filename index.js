@@ -1617,6 +1617,14 @@ const BOT_RUNTIME_STATE_WRITE_DEBOUNCE_MS = Math.max(
   150,
   parseNumberEnv("BOT_RUNTIME_STATE_WRITE_DEBOUNCE_MS", 1200) || 1200
 );
+const MANAGED_STOP_GRACE_MS = Math.max(
+  4_000,
+  parseNumberEnv("MANAGED_STOP_GRACE_MS", 18_000) || 18_000
+);
+const MANAGED_STOP_LOG_THROTTLE_MS = Math.max(
+  2_000,
+  parseNumberEnv("MANAGED_STOP_LOG_THROTTLE_MS", 12_000) || 12_000
+);
 const GROUP_METADATA_CACHE_TTL_MS = Math.max(
   60_000,
   parseNumberEnv("GROUP_METADATA_CACHE_TTL_MS", 5 * 60 * 1000) || 5 * 60 * 1000
@@ -2257,6 +2265,9 @@ function ensureBotState(config) {
     persistedStateWriteTimer: null,
     persistedStateWritePending: false,
     socketRecoveryTimer: null,
+    managedStopDeferredAt: 0,
+    lastManagedStopDecisionReason: "",
+    lastManagedStopDecisionAt: 0,
   };
 
   botStates.set(config.id, state);
@@ -3524,6 +3535,11 @@ function scheduleReconnect(botState, ms = 2500) {
   }
 
   if (isReplacementBlocked(botState)) {
+    return;
+  }
+
+  const startDecision = evaluateManagedProcessStartDecision(botState?.config, { botState });
+  if (!startDecision.start) {
     return;
   }
 
@@ -4958,33 +4974,135 @@ function shouldDelaySecondaryStartup(config = {}, botState = null) {
   );
 }
 
-function shouldManagedProcessStartBot(config = {}) {
-  if (!config) return false;
+function evaluateManagedProcessStartDecision(config = {}, options = {}) {
+  if (!config) {
+    return { start: false, reason: "missing_config" };
+  }
 
-  const botState = botStates.get(config.id);
+  const botState = options?.botState || botStates.get(config.id) || null;
   if (isReplacementBlocked(botState)) {
-    return false;
+    return { start: false, reason: "replacement_blocked_memory" };
   }
 
   if (isPersistedReplacementBlocked(config.id)) {
-    return false;
+    const connectionState = String(botState?.connectionState || "")
+      .trim()
+      .toLowerCase();
+    const liveSocketState = Boolean(
+      botState?.sock ||
+        botState?.connecting ||
+        botState?.reconnectTimer ||
+        botState?.connectedAt
+    );
+
+    if (
+      liveSocketState &&
+      ["open", "connecting", "reconnecting", "booting", "close"].includes(connectionState)
+    ) {
+      return {
+        start: true,
+        reason: "persisted_replacement_block_ignored_live_socket",
+      };
+    }
+
+    return { start: false, reason: "replacement_blocked_persisted" };
   }
 
   if (config.id === "main") {
-    return true;
+    return { start: true, reason: "main_process" };
   }
 
   if (config.enabled === false) {
-    return false;
+    return { start: false, reason: "slot_disabled" };
   }
 
   if (!SPLIT_PROCESS_MODE) {
-    return shouldStartSecondaryBot(config);
+    return shouldStartSecondaryBot(config)
+      ? { start: true, reason: "secondary_session_ready" }
+      : { start: false, reason: "secondary_missing_session" };
   }
 
-  return Boolean(
-    hasPersistedBotSession(config) ||
-      (sanitizePhoneNumber(config?.pairingNumber) && isMainBotReady())
+  if (hasPersistedBotSession(config)) {
+    return { start: true, reason: "persisted_session" };
+  }
+
+  if (sanitizePhoneNumber(config?.pairingNumber) && isMainBotReady()) {
+    return { start: true, reason: "pairing_number_main_ready" };
+  }
+
+  return { start: false, reason: "waiting_session_or_main" };
+}
+
+function shouldManagedProcessStartBot(config = {}, options = {}) {
+  return evaluateManagedProcessStartDecision(config, options).start;
+}
+
+function shouldDeferManagedStop(botState, stopReason = "esperando_sesion") {
+  if (!botState || stopReason !== "esperando_sesion") {
+    return false;
+  }
+
+  const connectionState = String(botState.connectionState || "")
+    .trim()
+    .toLowerCase();
+  if (
+    botState.sock &&
+    ["open", "connecting", "reconnecting", "booting"].includes(connectionState)
+  ) {
+    return true;
+  }
+
+  if (botState.connecting || botState.reconnectTimer) {
+    return true;
+  }
+
+  const lastActivityAt = Math.max(
+    Number(botState.lastSocketEventAt || 0),
+    Number(botState.connectedAt || 0),
+    Number(botState.bootStartedAt || 0),
+    Number(botState.lastDisconnectAt || 0)
+  );
+
+  if (lastActivityAt > 0 && Date.now() - lastActivityAt < MANAGED_STOP_GRACE_MS) {
+    return true;
+  }
+
+  const lastDisconnectCode = Number(botState.lastDisconnectCode || 0);
+  const lastDisconnectAt = Number(botState.lastDisconnectAt || 0);
+  if (
+    lastDisconnectCode === 0 &&
+    lastDisconnectAt > 0 &&
+    Date.now() - lastDisconnectAt < MANAGED_STOP_GRACE_MS * 2
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function logManagedStopDecision(botState, config, decision) {
+  if (!botState || !decision || decision.start) {
+    return;
+  }
+
+  const reason = String(decision.reason || "unknown");
+  const now = Date.now();
+
+  if (
+    botState.lastManagedStopDecisionReason === reason &&
+    now - Number(botState.lastManagedStopDecisionAt || 0) < MANAGED_STOP_LOG_THROTTLE_MS
+  ) {
+    return;
+  }
+
+  botState.lastManagedStopDecisionReason = reason;
+  botState.lastManagedStopDecisionAt = now;
+
+  console.log(
+    `${getBotTag(botState)} Sync: pausa gestionada (${reason}) ` +
+      `| enabled=${config?.enabled !== false} ` +
+      `| state=${String(botState.connectionState || "unknown")} ` +
+      `| hasSocket=${Boolean(botState.sock)}`
   );
 }
 
@@ -5010,6 +5128,9 @@ function stopLocalManagedBot(botState, reason = "disabled") {
   botState.connectedAt = 0;
   botState.connectionState = `stopped:${String(reason || "disabled").slice(0, 40)}`;
   botState.bootStartedAt = 0;
+  botState.managedStopDeferredAt = 0;
+  botState.lastManagedStopDecisionReason = "";
+  botState.lastManagedStopDecisionAt = 0;
   clearActiveCommandState(botState);
   botState.groupCache?.clear?.();
   botState.contactNameCache?.clear?.();
@@ -5159,14 +5280,36 @@ async function syncManagedProcessBots() {
         ...config,
       };
 
-      if (!shouldManagedProcessStartBot(config)) {
-        if (botState.sock || botState.connecting || botState.reconnectTimer) {
-          stopLocalManagedBot(botState, config.enabled === false ? "slot_apagado" : "esperando_sesion");
+      const startDecision = evaluateManagedProcessStartDecision(config, { botState });
+      if (!startDecision.start) {
+        const stopReason = config.enabled === false ? "slot_apagado" : "esperando_sesion";
+        const hasLiveRuntime = Boolean(botState.sock || botState.connecting || botState.reconnectTimer);
+
+        logManagedStopDecision(botState, config, startDecision);
+
+        if (hasLiveRuntime) {
+          if (shouldDeferManagedStop(botState, stopReason)) {
+            if (!Number(botState.managedStopDeferredAt || 0)) {
+              botState.managedStopDeferredAt = Date.now();
+            }
+            if (!botState.sock && !botState.connectedAt) {
+              botState.connectionState = "waiting_stop_grace";
+            }
+            writePersistedBotRuntimeState(botState);
+          } else {
+            botState.managedStopDeferredAt = 0;
+            stopLocalManagedBot(botState, stopReason);
+          }
         } else {
+          botState.managedStopDeferredAt = 0;
           writePersistedBotRuntimeState(botState);
         }
         continue;
       }
+
+      botState.managedStopDeferredAt = 0;
+      botState.lastManagedStopDecisionReason = "";
+      botState.lastManagedStopDecisionAt = 0;
 
       if (shouldDelaySecondaryStartup(config, botState)) {
         botState.connectionState = "waiting_main_boot";
