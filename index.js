@@ -92,6 +92,13 @@ const SECONDARY_BOT_START_DELAY_MS = 2500;
 const FATAL_ERROR_WINDOW_MS = 2 * 60 * 1000;
 const FATAL_ERROR_THRESHOLD = 3;
 const RECONNECT_JITTER_RATIO = 0.2;
+const RECONNECT_BASE_DELAY_MS = 2500;
+const RECONNECT_MAX_DELAY_MS = 45 * 1000;
+const RECONNECT_CODE0_MIN_DELAY_MS = 6000;
+const SUBBOT_RECONNECT_STAGGER_MS = 700;
+const SUBBOT_RECONNECT_STAGGER_MAX_MS = 8000;
+const CONNECTING_LOG_THROTTLE_MS = 8 * 1000;
+const MESSAGE_UPSERT_LOG_THROTTLE_MS = 4 * 1000;
 const CONTACT_NAME_CACHE_TTL_MS = 10 * 60 * 1000;
 const CONTACT_NAME_CACHE_MAX_ENTRIES = 3000;
 const APPEND_UPSERT_RECENT_WINDOW_MS = 3 * 60 * 1000;
@@ -2017,6 +2024,43 @@ function getBotTag(value) {
   return `[${label}]`;
 }
 
+function getBotSlotNumber(value) {
+  const config = value?.config || value;
+  const slot = Number(config?.slot || 0);
+  return Number.isInteger(slot) && slot >= 1 ? slot : 0;
+}
+
+function formatLogTime(timestamp = Date.now()) {
+  const date = new Date(Number(timestamp || Date.now()));
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
+function logBotEvent(value, level = "info", message = "") {
+  const line = `${chalk.gray(`[${formatLogTime()}]`)} ${getBotTag(value)} ${String(
+    message || ""
+  ).trim()}`;
+
+  if (level === "error") {
+    console.log(chalk.redBright(line));
+    return;
+  }
+
+  if (level === "warn") {
+    console.log(chalk.yellowBright(line));
+    return;
+  }
+
+  if (level === "success") {
+    console.log(chalk.greenBright(line));
+    return;
+  }
+
+  console.log(chalk.cyanBright(line));
+}
+
 function createStoreForBot(botId) {
   if (typeof makeInMemoryStore !== "function") return null;
 
@@ -2347,10 +2391,16 @@ function ensureBotState(config) {
     replacementBlockedAt: 0,
     replacementBlockedUntil: 0,
     reconnectAttempts: 0,
+    lastReconnectScheduledAt: 0,
+    lastReconnectDelayMs: 0,
+    lastReconnectReason: "",
     lastProfileSignature: "",
     lastProfileAppliedAt: 0,
     profileApplyTimer: null,
     reconnectTimer: null,
+    lastConnectingLogAt: 0,
+    lastUpsertLogAt: 0,
+    suppressedUpsertCount: 0,
     bootStartedAt: 0,
     connectionState: "",
     lastDisconnectCode: 0,
@@ -2462,15 +2512,73 @@ function applyReconnectJitter(baseDelayMs = 0) {
   return Math.max(1000, base + offset);
 }
 
-function getReconnectDelay(botState, loggedOut = false) {
+function getSubbotReconnectOffsetMs(botState) {
+  if (String(botState?.config?.id || "").trim().toLowerCase() === "main") {
+    return 0;
+  }
+
+  const slot = getBotSlotNumber(botState);
+  if (!slot) {
+    return Math.floor(SUBBOT_RECONNECT_STAGGER_MS / 2);
+  }
+
+  return Math.min(
+    SUBBOT_RECONNECT_STAGGER_MAX_MS,
+    Math.max(0, slot - 1) * SUBBOT_RECONNECT_STAGGER_MS
+  );
+}
+
+function getReconnectDelay(botState, options = false) {
+  const loggedOut =
+    typeof options === "boolean" ? options : Boolean(options?.loggedOut);
+  const closeCode =
+    typeof options === "object" && options !== null
+      ? Number(options.closeCode || 0)
+      : 0;
+  const subbotOffset = getSubbotReconnectOffsetMs(botState);
+
   if (loggedOut) {
     botState.reconnectAttempts = 0;
-    return applyReconnectJitter(4000);
+    const loggedOutDelay = Math.max(4000, RECONNECT_CODE0_MIN_DELAY_MS) + subbotOffset;
+    return applyReconnectJitter(loggedOutDelay);
   }
 
   const attempts = Math.max(1, Math.min(8, Number(botState?.reconnectAttempts || 0) + 1));
   botState.reconnectAttempts = attempts;
-  return applyReconnectJitter(Math.min(30_000, 2500 * 2 ** (attempts - 1)));
+
+  let baseDelayMs = Math.min(
+    RECONNECT_MAX_DELAY_MS,
+    RECONNECT_BASE_DELAY_MS * 2 ** (attempts - 1)
+  );
+
+  if (closeCode === 0) {
+    baseDelayMs = Math.max(baseDelayMs, RECONNECT_CODE0_MIN_DELAY_MS);
+  }
+
+  baseDelayMs += subbotOffset;
+  return applyReconnectJitter(Math.min(RECONNECT_MAX_DELAY_MS, baseDelayMs));
+}
+
+function logMessageUpsertEvent(botState, type, count) {
+  const now = Date.now();
+  const normalizedCount = Math.max(0, Number(count || 0));
+  const elapsed = now - Number(botState?.lastUpsertLogAt || 0);
+
+  if (elapsed < MESSAGE_UPSERT_LOG_THROTTLE_MS) {
+    botState.suppressedUpsertCount = Number(botState?.suppressedUpsertCount || 0) + normalizedCount;
+    return;
+  }
+
+  const suppressed = Number(botState?.suppressedUpsertCount || 0);
+  botState.suppressedUpsertCount = 0;
+  botState.lastUpsertLogAt = now;
+
+  const extra = suppressed > 0 ? ` | +${suppressed} suprimidos` : "";
+  logBotEvent(
+    botState,
+    "info",
+    `messages.upsert type=${String(type || "unknown")} count=${normalizedCount}${extra}`
+  );
 }
 
 function getDisconnectReasonText(lastDisconnect = null) {
@@ -3650,7 +3758,7 @@ function scheduleProcessRestart(delayMs = PROCESS_RESTART_DELAY_MS) {
   };
 }
 
-function scheduleReconnect(botState, ms = 2500) {
+function scheduleReconnect(botState, ms = RECONNECT_BASE_DELAY_MS, reason = "auto") {
   if (botState?.config?.id !== "main" && botState?.config?.enabled === false) {
     return;
   }
@@ -3668,19 +3776,39 @@ function scheduleReconnect(botState, ms = 2500) {
   clearSocketRecoveryTimer(botState);
   botState.connectionState = "reconnecting";
   markBotSocketActivity(botState, "reconnecting");
+  const reconnectDelayMs = Math.max(800, Number(ms || RECONNECT_BASE_DELAY_MS));
+  botState.lastReconnectScheduledAt = Date.now();
+  botState.lastReconnectDelayMs = reconnectDelayMs;
+  botState.lastReconnectReason = String(reason || "auto")
+    .trim()
+    .slice(0, 80);
+  const reconnectAttempt = Math.max(1, Number(botState?.reconnectAttempts || 1));
+
+  logBotEvent(
+    botState,
+    "warn",
+    `Reconexion en ${Math.ceil(reconnectDelayMs / 1000)}s ` +
+      `(intento ${reconnectAttempt}, motivo: ${botState.lastReconnectReason || "auto"})`
+  );
+
   botState.reconnectTimer = setTimeout(() => {
     botState.reconnectTimer = null;
     Promise.resolve(iniciarInstanciaBot(botState.config)).catch((error) => {
-      console.error(
-        `${getBotTag(botState)} Error en reconexion programada:`,
-        error?.message || error
+      logBotEvent(
+        botState,
+        "error",
+        `Error en reconexion programada: ${String(error?.message || error)}`
       );
 
       if (shouldManagedProcessStartBot(botState.config) && !isReplacementBlocked(botState)) {
-        scheduleReconnect(botState, getReconnectDelay(botState, false));
+        scheduleReconnect(
+          botState,
+          getReconnectDelay(botState, false),
+          "error_reconexion_programada"
+        );
       }
     });
-  }, ms);
+  }, reconnectDelayMs);
   botState.reconnectTimer.unref?.();
 }
 
@@ -3711,7 +3839,11 @@ function scheduleSocketRecoveryCheck(
     }
 
     recycleBotInstance(botState, reason);
-    scheduleReconnect(botState, getReconnectDelay(botState, false));
+    scheduleReconnect(
+      botState,
+      getReconnectDelay(botState, false),
+      `socket_recovery:${String(reason || "socket_closed").slice(0, 40)}`
+    );
   }, Math.max(500, Number(delayMs || 1500)));
   botState.socketRecoveryTimer.unref?.();
 }
@@ -3741,7 +3873,7 @@ function attachSocketLifecycleWatchers(botState, sock) {
 
   rawSocket.on("error", (error) => {
     markBotSocketActivity(botState, "ws.error");
-    console.warn(`${getBotTag(botState)} WebSocket error:`, error?.message || error);
+    logBotEvent(botState, "warn", `WebSocket error: ${String(error?.message || error)}`);
 
     const readyState = Number(sock.ws?.readyState);
     if (botState?.connectedAt || (Number.isFinite(readyState) && readyState >= 2)) {
@@ -4565,31 +4697,52 @@ function banner() {
     .filter(Boolean)
     .join(", ") || "NINGUNO";
   const activeConfigLabels = BOT_CONFIGS.map((cfg) => cfg.label).join(", ") || "NINGUNO";
+  const botName = String(settings?.botName || "Fsociety bot")
+    .trim()
+    .toUpperCase();
+  const ownerName = String(settings?.ownerName || "Owner").trim();
+  const prefixValue = Array.isArray(settings.prefix)
+    ? settings.prefix.join(", ")
+    : String(settings.prefix || ".");
 
+  console.log(chalk.cyanBright("┌──────────────────────────────────────────────────────────┐"));
   console.log(
-    chalk.magentaBright(`
-+--------------------------------------+
-|        ${String(settings?.botName || "Fsociety bot").toUpperCase().padEnd(28, " ")}|
-+--------------------------------------+
-`)
+    chalk.cyanBright(
+      `│ ${botName.padEnd(56, " ").slice(0, 56)} │`
+    )
   );
-
+  console.log(chalk.cyanBright("├──────────────────────────────────────────────────────────┤"));
   console.log(
-    chalk.green("Owner :"),
-    settings.ownerName,
-    chalk.blue("\nPrefijo :"),
-    Array.isArray(settings.prefix) ? settings.prefix.join(", ") : settings.prefix,
-    chalk.yellow("\nComandos cargados :"),
-    comandos.size,
-    chalk.magenta("\nModo proceso :"),
-    PROCESS_MODE_LABEL,
-    chalk.cyan("\nEste proceso maneja :"),
-    managedLabels,
-    chalk.magenta("\nBots habilitados :"),
-    activeConfigLabels
+    chalk.white(
+      `│ Owner: ${ownerName.padEnd(49, " ").slice(0, 49)} │`
+    )
   );
-
-  console.log(chalk.gray("------------------------------"));
+  console.log(
+    chalk.white(
+      `│ Prefijos: ${prefixValue.padEnd(46, " ").slice(0, 46)} │`
+    )
+  );
+  console.log(
+    chalk.white(
+      `│ Comandos: ${String(comandos.size).padEnd(46, " ").slice(0, 46)} │`
+    )
+  );
+  console.log(
+    chalk.white(
+      `│ Proceso: ${String(PROCESS_MODE_LABEL).padEnd(47, " ").slice(0, 47)} │`
+    )
+  );
+  console.log(
+    chalk.white(
+      `│ Maneja: ${managedLabels.padEnd(48, " ").slice(0, 48)} │`
+    )
+  );
+  console.log(
+    chalk.white(
+      `│ Habilitados: ${activeConfigLabels.padEnd(43, " ").slice(0, 43)} │`
+    )
+  );
+  console.log(chalk.cyanBright("└──────────────────────────────────────────────────────────┘"));
 }
 
 // ================= CARGAR COMANDOS =================
@@ -5106,7 +5259,11 @@ async function reconnectManagedSubbot(botId, options = {}) {
   }
 
   recycleBotInstance(targetState, String(options?.reason || "owner_reconnect"));
-  scheduleReconnect(targetState, Math.max(800, Number(options?.delayMs || 1200)));
+  scheduleReconnect(
+    targetState,
+    Math.max(800, Number(options?.delayMs || 1200)),
+    String(options?.reason || "owner_reconnect")
+  );
   writePersistedBotRuntimeState(targetState);
 
   return {
@@ -5385,11 +5542,13 @@ function logManagedStopDecision(botState, config, decision) {
   botState.lastManagedStopDecisionReason = reason;
   botState.lastManagedStopDecisionAt = now;
 
-  console.log(
-    `${getBotTag(botState)} Sync: pausa gestionada (${reason}) ` +
-      `| enabled=${config?.enabled !== false} ` +
-      `| state=${String(botState.connectionState || "unknown")} ` +
-      `| hasSocket=${Boolean(botState.sock)}`
+  logBotEvent(
+    botState,
+    "warn",
+    `Sync: pausa gestionada (${reason})` +
+      ` | enabled=${config?.enabled !== false}` +
+      ` | state=${String(botState.connectionState || "unknown")}` +
+      ` | hasSocket=${Boolean(botState.sock)}`
   );
 }
 
@@ -5423,7 +5582,7 @@ function stopLocalManagedBot(botState, reason = "disabled") {
   botState.contactNameCache?.clear?.();
   botState.recentMessageIds?.clear?.();
   botState.activeDownloadJobs?.clear?.();
-  console.log(`${getBotTag(botState)} Detenido localmente (${reason})`);
+  logBotEvent(botState, "warn", `Detenido localmente (${reason})`);
   writePersistedBotRuntimeState(botState);
 }
 
@@ -5455,7 +5614,7 @@ function recycleBotInstance(botState, reason = "recovery") {
   clearActiveCommandState(botState);
   botState.activeDownloadJobs?.clear?.();
   resetPairingCache(botState);
-  console.log(`${getBotTag(botState)} Reciclado automaticamente (${reason})`);
+  logBotEvent(botState, "warn", `Reciclado automaticamente (${reason})`);
   writePersistedBotRuntimeState(botState);
   return true;
 }
@@ -5491,7 +5650,11 @@ function runBotHealthChecks() {
       recycleBotInstance(botState, "conexion_atascada");
 
       if (shouldBeRunning) {
-        scheduleReconnect(botState, getReconnectDelay(botState, false));
+        scheduleReconnect(
+          botState,
+          getReconnectDelay(botState, false),
+          "health:conexion_atascada"
+        );
       }
       continue;
     }
@@ -5506,7 +5669,11 @@ function runBotHealthChecks() {
       recycleBotInstance(botState, "socket_ws_cerrado");
 
       if (shouldBeRunning) {
-        scheduleReconnect(botState, getReconnectDelay(botState, false));
+        scheduleReconnect(
+          botState,
+          getReconnectDelay(botState, false),
+          "health:socket_ws_cerrado"
+        );
       }
       continue;
     }
@@ -5521,7 +5688,7 @@ function runBotHealthChecks() {
       recycleBotInstance(botState, "pairing_atascado");
 
       if (shouldBeRunning) {
-        scheduleReconnect(botState, 4000);
+        scheduleReconnect(botState, 4000, "health:pairing_atascado");
       }
       continue;
     }
@@ -5538,7 +5705,11 @@ function runBotHealthChecks() {
       recycleBotInstance(botState, "socket_degradado");
 
       if (shouldBeRunning) {
-        scheduleReconnect(botState, getReconnectDelay(botState, false));
+        scheduleReconnect(
+          botState,
+          getReconnectDelay(botState, false),
+          "health:socket_degradado"
+        );
       }
     }
 
@@ -6495,7 +6666,11 @@ async function iniciarInstanciaBot(config) {
         }
 
         if (connection === "connecting") {
-          console.log(`${getBotTag(botState)} Conectando...`);
+          const now = Date.now();
+          if (now - Number(botState.lastConnectingLogAt || 0) >= CONNECTING_LOG_THROTTLE_MS) {
+            botState.lastConnectingLogAt = now;
+            logBotEvent(botState, "info", "Conectando...");
+          }
         }
 
         if (connection === "open") {
@@ -6514,10 +6689,10 @@ async function iniciarInstanciaBot(config) {
           resetPairingCache(botState);
           botState.pairingCommandHintShown = false;
           scheduleProfileApply(botState, botState.sock);
-          console.log(
-            chalk.green(
-              `${getBotTag(botState)} Ya conectado bot ${resolveConfiguredBotName(config)}`
-            )
+          logBotEvent(
+            botState,
+            "success",
+            `Ya conectado bot ${resolveConfiguredBotName(config)}`
           );
           writePersistedBotRuntimeState(botState);
 
@@ -6533,10 +6708,11 @@ async function iniciarInstanciaBot(config) {
           const reasonText = getDisconnectReasonText(lastDisconnect);
 
           markBotSocketActivity(botState, `connection.close:${code || "unknown"}`);
-          console.log(
-            `${getBotTag(botState)} Conexion cerrada:`,
-            code,
-            reasonText ? `(${reasonText.slice(0, 160)})` : ""
+          logBotEvent(
+            botState,
+            "warn",
+            `Conexion cerrada: ${code || 0}` +
+              (reasonText ? ` (${reasonText.slice(0, 160)})` : "")
           );
 
           const loggedOut =
@@ -6577,27 +6753,37 @@ async function iniciarInstanciaBot(config) {
             botState.reconnectAttempts = 0;
             clearReconnectTimer(botState);
             writePersistedBotRuntimeState(botState);
-            console.log(
-              chalk.yellow(
-                `${getBotTag(botState)} Sesion reemplazada (440). ` +
-                `No voy a reconectar en bucle. Revisa si ese numero esta abierto ` +
-                `en otro VPS, hosting o dispositivo vinculado.`
-              )
+            logBotEvent(
+              botState,
+              "warn",
+              `Sesion reemplazada (440). No reconecto en bucle; revisa si ese numero ` +
+                `esta abierto en otro VPS, hosting o dispositivo.`
             );
             return;
           }
 
           if (restartRequired) {
             botState.reconnectAttempts = 0;
-            scheduleReconnect(botState, 1200);
+            scheduleReconnect(botState, 1200, "restart_required");
             return;
           }
 
-          scheduleReconnect(botState, getReconnectDelay(botState, loggedOut));
+          const reconnectDelay = getReconnectDelay(botState, {
+            loggedOut,
+            closeCode: code,
+          });
+          const reconnectReason = loggedOut
+            ? "logged_out"
+            : `close_code_${Number(code || 0) || "unknown"}`;
+          scheduleReconnect(botState, reconnectDelay, reconnectReason);
         }
       } catch (err) {
         resetPairingCache(botState);
-        console.error(`${getBotTag(botState)} Error en connection.update:`, err);
+        logBotEvent(
+          botState,
+          "error",
+          `Error en connection.update: ${String(err?.message || err)}`
+        );
       }
     });
 
@@ -6629,11 +6815,7 @@ async function iniciarInstanciaBot(config) {
       }
 
       if (hasMessagePayload) {
-        console.log(
-          `${getBotTag(botState)} messages.upsert type=${type || "unknown"} count=${
-            messages?.length || 0
-          }`
-        );
+        logMessageUpsertEvent(botState, type, messages?.length || 0);
       }
 
       if (!filteredMessages.length) return;
@@ -6688,11 +6870,15 @@ async function iniciarInstanciaBot(config) {
     botState.lastDisconnectAt = Date.now();
     botState.lastSocketEventAt = Date.now();
     botState.lastSocketEvent = "start_error";
-    console.error(`${getBotTag(config)} Error iniciando bot:`, err);
+    logBotEvent(config, "error", `Error iniciando bot: ${String(err?.message || err)}`);
     writePersistedBotRuntimeState(botState);
 
     if (shouldManagedProcessStartBot(botState.config) && !isReplacementBlocked(botState)) {
-      scheduleReconnect(botState, getReconnectDelay(botState, false));
+      scheduleReconnect(
+        botState,
+        getReconnectDelay(botState, false),
+        "start_error"
+      );
     }
   } finally {
     botState.connecting = false;
