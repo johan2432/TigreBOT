@@ -34,19 +34,52 @@ function normalizeCategoryLabel(value = "") {
     .toUpperCase();
 }
 
+function normalizeCategoryKey(value = "") {
+  const key = String(value || "").trim().toLowerCase();
+  const aliases = {
+    descarga: "descargas",
+    grupo: "grupos",
+  };
+  return aliases[key] || key;
+}
+
+function getCategorySortIndex(category = "") {
+  const order = [
+    "menu",
+    "descargas",
+    "busqueda",
+    "freefire",
+    "juegos",
+    "herramientas",
+    "grupos",
+    "subbots",
+    "economia",
+    "sistema",
+    "ia",
+    "media",
+    "anime",
+    "admin",
+    "vip",
+  ];
+  const index = order.indexOf(normalizeCategoryKey(category));
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+}
+
 function getCategoryIcon(category = "") {
-  const key = String(category || "").trim().toLowerCase();
+  const key = normalizeCategoryKey(category);
   const icons = {
     admin: "👑",
     ai: "🧠",
+    ia: "🧠",
     anime: "🌸",
     busqueda: "🔎",
-    descarga: "📥",
     descargas: "📥",
     economia: "💰",
     freefire: "🔥",
-    grupo: "🛡️",
+    grupos: "🛡️",
+    herramientas: "🧰",
     juegos: "🎮",
+    media: "🖼️",
     menu: "📜",
     sistema: "⚙️",
     subbots: "🤖",
@@ -71,7 +104,7 @@ function buildTopPanel({ settings, uptime, totalCategories, totalCommands, prefi
 
 function buildCategoryBlock(category, commands, primaryPrefix) {
   const icon = getCategoryIcon(category);
-  const title = normalizeCategoryLabel(category);
+  const title = normalizeCategoryLabel(normalizeCategoryKey(category));
   const lines = [
     `╭─〔 ${icon} ${title} 〕`,
     ...commands.map((name) => `│ • \`${primaryPrefix}${name}\``),
@@ -84,6 +117,7 @@ function buildCategoryBlock(category, commands, primaryPrefix) {
 function buildFooter(primaryPrefix) {
   return [
     "╭─〔 NOTAS 〕",
+    `│ • Usa \`${primaryPrefix}herramientas\` para utilidades ordenadas`,
     `│ • Usa \`${primaryPrefix}status\` para ver el estado del bot`,
     `│ • Usa \`${primaryPrefix}owner\` si necesitas soporte directo`,
     "╰────────────⬣",
@@ -128,7 +162,7 @@ export default {
       for (const cmd of new Set(comandos.values())) {
         if (!cmd?.category || !cmd?.command) continue;
 
-        const category = String(cmd.category).toLowerCase();
+        const category = normalizeCategoryKey(cmd.category);
         const principal = cmd.name || (Array.isArray(cmd.command) ? cmd.command[0] : cmd.command);
         if (!principal) continue;
 
@@ -136,7 +170,11 @@ export default {
         categorias[category].add(String(principal).toLowerCase());
       }
 
-      const categoryNames = Object.keys(categorias).sort();
+      const categoryNames = Object.keys(categorias).sort((a, b) => {
+        const byOrder = getCategorySortIndex(a) - getCategorySortIndex(b);
+        if (byOrder !== 0) return byOrder;
+        return String(a).localeCompare(String(b));
+      });
       const totalCommands = categoryNames.reduce(
         (sum, category) => sum + Array.from(categorias[category]).length,
         0

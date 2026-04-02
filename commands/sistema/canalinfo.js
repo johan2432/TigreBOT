@@ -102,23 +102,66 @@ function buildChannelSummary(meta, inviteCode) {
   return lines.join("\n");
 }
 
+function buildNumberSummary(number = "", sourceLabel = "Numero") {
+  const digits = extractDigits(number);
+  const jid = toJidFromNumber(digits);
+  const lid = toLidFromNumber(digits);
+  return (
+    `*CONVERSION ${String(sourceLabel || "NUMERO").toUpperCase()}*\n\n` +
+    `Numero: *+${digits}*\n` +
+    `JID: *${jid}*\n` +
+    `LID: *${lid}*\n\n` +
+    `Nota: el LID puede cambiar por dispositivo/cuenta.`
+  );
+}
+
+function resolveSenderNumber({ sender = "", msg = {}, from = "" } = {}) {
+  const candidates = [
+    sender,
+    msg?.sender,
+    msg?.key?.participant,
+    msg?.participant,
+    msg?.key?.remoteJid,
+    from,
+  ];
+
+  for (const candidate of candidates) {
+    const digits = extractDigits(candidate);
+    if (digits.length >= 8) return digits;
+  }
+  return "";
+}
+
 export default {
   name: "canalinfo",
-  command: ["canalinfo", "channelinfo", "newsletterinfo", "jidlid", "lids"],
+  command: ["canalinfo", "channelinfo", "newsletterinfo", "jidlid", "lids", "lid", "mylid"],
   category: "sistema",
   description: "Obtiene JID/LID de canal por enlace o convierte numero a JID/LID",
 
-  run: async ({ sock, msg, from, args = [], settings }) => {
+  run: async ({ sock, msg, from, args = [], settings, sender = "" }) => {
     const prefix = getPrefix(settings);
     const rawInput = normalizeText(Array.isArray(args) ? args.join(" ") : "");
+    const senderNumber = resolveSenderNumber({ sender, msg, from });
 
-    if (!rawInput) {
+    if (!rawInput || ["yo", "me", "mio", "mi", "my", "self"].includes(rawInput.toLowerCase())) {
+      if (senderNumber) {
+        return sock.sendMessage(
+          from,
+          {
+            text: buildNumberSummary(senderNumber, "tu numero"),
+            ...global.channelInfo,
+          },
+          { quoted: msg }
+        );
+      }
+
       return sock.sendMessage(
         from,
         {
           text:
             `*CANALINFO*\n\n` +
             `Usa:\n` +
+            `- ${prefix}canalinfo yo\n` +
             `- ${prefix}canalinfo https://whatsapp.com/channel/XXXXXX\n` +
             `- ${prefix}canalinfo 51930108242\n` +
             `- ${prefix}canalinfo 51930108242@s.whatsapp.net`,
@@ -213,17 +256,10 @@ export default {
 
     const detectedNumber = extractDigits(rawInput);
     if (detectedNumber.length >= 8) {
-      const jid = toJidFromNumber(detectedNumber);
-      const lid = toLidFromNumber(detectedNumber);
       return sock.sendMessage(
         from,
         {
-          text:
-            `*CONVERSION NUMERO*\n\n` +
-            `Numero: *+${detectedNumber}*\n` +
-            `JID: *${jid}*\n` +
-            `LID: *${lid}*\n\n` +
-            `Nota: el LID puede cambiar por dispositivo/cuenta.`,
+          text: buildNumberSummary(detectedNumber, "numero"),
           ...global.channelInfo,
         },
         { quoted: msg }
