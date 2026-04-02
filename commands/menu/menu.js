@@ -89,10 +89,49 @@ function getCategoryIcon(category = "") {
   return icons[key] || "✦";
 }
 
-function buildTopPanel({ settings, uptime, totalCategories, totalCommands, prefixLabel }) {
+function getSubbotSlot(botId = "") {
+  const match = String(botId || "")
+    .trim()
+    .toLowerCase()
+    .match(/^subbot(\d{1,2})$/);
+
+  return match?.[1] ? Number.parseInt(match[1], 10) : 0;
+}
+
+function getMenuContext({ settings, botId = "", botLabel = "" }) {
+  const normalizedBotId = String(botId || "").trim().toLowerCase();
+
+  if (!normalizedBotId || normalizedBotId === "main") {
+    return {
+      title: "FSOCIETY BOT PRINCIPAL",
+      botLine: settings?.botName || "Fsociety bot",
+    };
+  }
+
+  const slot = getSubbotSlot(normalizedBotId);
+  const subbotName =
+    (slot >= 1 && Array.isArray(settings?.subbots) && settings.subbots[slot - 1]?.name) ||
+    String(botLabel || "").trim() ||
+    `Fsociety Subbot ${slot || 1}`;
+
+  return {
+    title: `MENU SUBBOT FSOCIETY ${slot || 1}`,
+    botLine: subbotName,
+  };
+}
+
+function buildTopPanel({
+  settings,
+  uptime,
+  totalCategories,
+  totalCommands,
+  prefixLabel,
+  menuTitle,
+  botLine,
+}) {
   return [
-    "╭━━━〔 MENU PRINCIPAL 〕━━━⬣",
-    `┃ ✦ Bot: *${settings.botName || "BOT"}*`,
+    `╭━━━〔 ${menuTitle} 〕━━━⬣`,
+    `┃ ✦ Bot activo: *${botLine || settings.botName || "BOT"}*`,
     `┃ ✦ Owner: *${settings.ownerName || "Owner"}*`,
     `┃ ✦ Prefijos: *${prefixLabel}*`,
     `┃ ✦ Uptime: *${uptime}*`,
@@ -135,7 +174,7 @@ export default {
   category: "menu",
   description: "Menu principal con imagen",
 
-  run: async ({ sock, msg, from, settings, comandos }) => {
+  run: async ({ sock, msg, from, settings, comandos, botId, botLabel }) => {
     try {
       if (!comandos) {
         return sock.sendMessage(
@@ -157,6 +196,7 @@ export default {
       const uptime = formatUptime(process.uptime());
       const primaryPrefix = getPrimaryPrefix(settings);
       const prefixLabel = getPrefixLabel(settings);
+      const menuContext = getMenuContext({ settings, botId, botLabel });
       const categorias = {};
 
       for (const cmd of new Set(comandos.values())) {
@@ -187,6 +227,8 @@ export default {
           totalCategories: categoryNames.length,
           totalCommands,
           prefixLabel,
+          menuTitle: menuContext.title,
+          botLine: menuContext.botLine,
         }),
         ...categoryNames.map((category) =>
           buildCategoryBlock(category, Array.from(categorias[category]).sort(), primaryPrefix)
