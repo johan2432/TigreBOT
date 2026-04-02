@@ -4741,32 +4741,44 @@ function banner() {
   const prefixValue = Array.isArray(settings.prefix)
     ? settings.prefix.join(", ")
     : String(settings.prefix || ".");
-  const bodyWidth = 84;
-  const border = "=".repeat(bodyWidth);
-  const section = "-".repeat(bodyWidth);
+  const nowText = new Date().toLocaleString();
+  const terminalWidth = Number(process.stdout?.columns || 0);
+  const bodyWidth = Math.max(76, Math.min(110, terminalWidth > 0 ? terminalWidth - 2 : 92));
+
+  const frame = {
+    top: `+${"=".repeat(bodyWidth - 2)}+`,
+    mid: `+${"-".repeat(bodyWidth - 2)}+`,
+    bottom: `+${"=".repeat(bodyWidth - 2)}+`,
+  };
+
+  const padLine = (text = "") => {
+    const content = String(text || "");
+    const available = Math.max(1, bodyWidth - 4);
+    const slice = content.length > available ? content.slice(0, available) : content;
+    return `| ${slice.padEnd(available, " ")} |`;
+  };
 
   const printField = (label, value) => {
-    const cleanLabel = String(label || "").trim();
-    const prefix = `${cleanLabel}: `;
-    const wrapWidth = Math.max(20, bodyWidth - prefix.length);
-    const lines = wrapConsoleText(value, wrapWidth);
-
+    const cleanLabel = String(label || "").trim().padEnd(12, " ");
+    const wrapWidth = Math.max(16, bodyWidth - 20);
+    const lines = wrapConsoleText(String(value || "-"), wrapWidth);
     lines.forEach((line, index) => {
-      const head = index === 0 ? prefix : " ".repeat(prefix.length);
-      console.log(chalk.white(`${head}${line}`));
+      const left = index === 0 ? cleanLabel : " ".repeat(cleanLabel.length);
+      console.log(chalk.white(padLine(`${left} ${line}`)));
     });
   };
 
-  console.log(chalk.cyanBright(border));
-  console.log(chalk.cyanBright(`FSOCIETY CONSOLE  |  ${botName}`));
-  console.log(chalk.cyanBright(section));
+  console.log(chalk.cyanBright(frame.top));
+  console.log(chalk.cyanBright(padLine(`FSOCIETY CONTROL PANEL :: ${botName}`)));
+  console.log(chalk.cyanBright(frame.mid));
   printField("Owner", ownerName);
   printField("Prefijos", prefixValue);
   printField("Comandos", String(comandos.size));
   printField("Proceso", String(PROCESS_MODE_LABEL));
   printField("Maneja", managedLabels);
   printField("Habilitados", activeConfigLabels);
-  console.log(chalk.cyanBright(border));
+  printField("Inicio", nowText);
+  console.log(chalk.cyanBright(frame.bottom));
 }
 
 // ================= CARGAR COMANDOS =================

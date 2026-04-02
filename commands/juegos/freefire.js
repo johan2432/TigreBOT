@@ -74,12 +74,60 @@ function normalizePlayerEntry(rawPlayer = {}, index = 0) {
   };
 }
 
+function parseIsoMillis(value = "") {
+  const time = Date.parse(String(value || ""));
+  return Number.isFinite(time) ? time : 0;
+}
+
+function sortPlayersByJoinDate(players = []) {
+  return [...players].sort((a, b) => {
+    const byDate = parseIsoMillis(a?.joinedAt) - parseIsoMillis(b?.joinedAt);
+    if (byDate !== 0) return byDate;
+    return normalizeText(a?.nick).localeCompare(normalizeText(b?.nick));
+  });
+}
+
+function resolveClanLineupPlayers(clan, teamSize) {
+  const orderedPlayers = sortPlayersByJoinDate(Array.isArray(clan?.players) ? clan.players : []);
+  const maxSize = Math.max(1, Number.parseInt(String(teamSize || 1), 10));
+  const mapByJid = new Map(orderedPlayers.map((player) => [normalizeJid(player.jid), player]));
+  const picked = [];
+  const seen = new Set();
+  const lineup = Array.isArray(clan?.lineup) ? clan.lineup : [];
+
+  for (const jidRaw of lineup) {
+    const jid = normalizeJid(jidRaw);
+    if (!jid || seen.has(jid)) continue;
+    const player = mapByJid.get(jid);
+    if (!player) continue;
+    picked.push(player);
+    seen.add(jid);
+    if (picked.length >= maxSize) break;
+  }
+
+  if (picked.length < maxSize) {
+    for (const player of orderedPlayers) {
+      const jid = normalizeJid(player.jid);
+      if (!jid || seen.has(jid)) continue;
+      picked.push(player);
+      seen.add(jid);
+      if (picked.length >= maxSize) break;
+    }
+  }
+
+  return picked;
+}
+
 function ensureClanShape(clan = {}) {
   let changed = false;
   const next = clan;
 
   if (!Array.isArray(next.players)) {
     next.players = [];
+    changed = true;
+  }
+  if (!Array.isArray(next.lineup)) {
+    next.lineup = [];
     changed = true;
   }
 
@@ -103,6 +151,20 @@ function ensureClanShape(clan = {}) {
     changed = true;
   }
   next.players = normalizedPlayers;
+
+  const normalizedLineup = [];
+  const seenLineup = new Set();
+  next.lineup.forEach((jidRaw) => {
+    const jid = normalizeJid(jidRaw);
+    if (!jid || seenLineup.has(jid)) return;
+    if (!normalizedPlayers.some((player) => normalizeJid(player.jid) === jid)) return;
+    normalizedLineup.push(jid);
+    seenLineup.add(jid);
+  });
+  if (normalizedLineup.length !== next.lineup.length) {
+    changed = true;
+  }
+  next.lineup = normalizedLineup;
 
   if (!Number.isFinite(next.points)) {
     next.points = 0;
@@ -345,6 +407,7 @@ function addClan(tournament, clanName) {
     killsAgainst: 0,
     createdAt: nowIso(),
     players: [],
+    lineup: [],
   };
   tournament.clans.push(clan);
   return { ok: true, clan };
@@ -387,11 +450,11 @@ function addPlayerToClan(tournament, clanName, { jid = "", nick = "" } = {}) {
     };
   }
 
-  const teamSize = tournament.formatRules?.teamSize || DEFAULT_FORMAT_RULES.teamSize;
-  if (!current && (clan.players || []).length >= teamSize) {
+  const MAX_ROSTER_PER_CLAN = 30;
+  if (!current && (clan.players || []).length >= MAX_ROSTER_PER_CLAN) {
     return {
       ok: false,
-      message: `*${clan.name}* ya completo sus cupos (${teamSize}/${teamSize}).`,
+      message: `*${clan.name}* ya llego al maximo de inscritos (${MAX_ROSTER_PER_CLAN}).`,
     };
   }
 
@@ -414,6 +477,7 @@ function addPlayerToClan(tournament, clanName, { jid = "", nick = "" } = {}) {
   );
 
   clan.players.push(player);
+  if (!Array.isArray(clan.lineup)) clan.lineup = [];
   return { ok: true, existed: false, clan, player };
 }
 
@@ -436,6 +500,9 @@ function removePlayerFromClan(tournament, clanName, jid = "") {
   current.clan.players = current.clan.players.filter(
     (player) => normalizeJid(player.jid) !== targetJid
   );
+  current.clan.lineup = (Array.isArray(current.clan.lineup) ? current.clan.lineup : []).filter(
+    (jid) => normalizeJid(jid) !== targetJid
+  );
 
   if (before === current.clan.players.length) {
     return { ok: false, message: "No pude quitar tu registro del clan." };
@@ -445,7 +512,67 @@ function removePlayerFromClan(tournament, clanName, jid = "") {
 }
 
 function clanIsReady(clan, teamSize) {
-  return ((clan.players || []).length || 0) >= teamSize;
+  return resolveClanLineupPlayers(clan, teamSize).length >= teamSize;
+}
+
+function autoBuildLineupForClan(clan, teamSize) {
+  const orderedPlayers = sortPlayersByJoinDate(Array.isArray(clan.players) ? clan.players : []);
+  const starters = orderedPlayers.slice(0, Math.max(0, teamSize));
+  const bench = orderedPlayers.slice(Math.max(0, teamSize));
+  clan.players = orderedPlayers;
+  clan.lineup = starters.map((player) => normalizeJid(player.jid)).filter(Boolean);
+  return { starters, bench };
+}
+
+function autoBuildLineups(tournament, targetClanName = "") {
+  const teamSize = tournament.formatRules?.teamSize || DEFAULT_FORMAT_RULES.teamSize;
+  const target = normalizeText(targetClanName);
+  const clans = target
+    ? tournament.clans.filter((clan) => normalizeClanKey(clan.name) === normalizeClanKey(target))
+    : tournament.clans;
+  if (!clans.length) {
+    return {
+      ok: false,
+      message: target
+        ? "No encontre ese clan para auto-armar equipos."
+        : "No hay clanes registrados para auto-armar.",
+    };
+  }
+
+  const rows = clans.map((clan) => {
+    const { starters, bench } = autoBuildLineupForClan(clan, teamSize);
+    return { clan, starters, bench };
+  });
+  return { ok: true, teamSize, rows };
+}
+
+function buildAutoLineupSummary(rows = [], teamSize = 4) {
+  return rows
+    .map(({ clan, starters, bench }) => {
+      const starterLines = starters.length
+        ? starters
+          .map(
+            (player, idx) =>
+              `   ${idx + 1}. ${normalizeText(player.nick) || "Jugador"} (${numberFromJid(player.jid)})`
+          )
+          .join("\n")
+        : "   Sin titulares";
+      const benchLines = bench.length
+        ? bench
+          .map(
+            (player, idx) =>
+              `   ${idx + 1}. ${normalizeText(player.nick) || "Jugador"} (${numberFromJid(player.jid)})`
+          )
+          .join("\n")
+        : "   Sin suplentes";
+
+      return (
+        `*${clan.name}* (${(clan.players || []).length}/${teamSize})\n` +
+        `Titulares:\n${starterLines}\n` +
+        `Suplentes:\n${benchLines}`
+      );
+    })
+    .join("\n\n");
 }
 
 function createMatch(tournament, clanAName, clanBName, roundLabel = "") {
@@ -460,8 +587,10 @@ function createMatch(tournament, clanAName, clanBName, roundLabel = "") {
   }
 
   const teamSize = tournament.formatRules?.teamSize || DEFAULT_FORMAT_RULES.teamSize;
-  const missingA = Math.max(teamSize - (clanA.players || []).length, 0);
-  const missingB = Math.max(teamSize - (clanB.players || []).length, 0);
+  const readyA = resolveClanLineupPlayers(clanA, teamSize).length;
+  const readyB = resolveClanLineupPlayers(clanB, teamSize).length;
+  const missingA = Math.max(teamSize - readyA, 0);
+  const missingB = Math.max(teamSize - readyB, 0);
 
   if (missingA > 0 || missingB > 0) {
     const lines = [];
@@ -659,13 +788,158 @@ function formatPlayerLine(player, idx) {
 
 function formatClanRoster(clan, teamSize) {
   const players = Array.isArray(clan.players) ? clan.players : [];
+  const lineupSet = new Set(
+    resolveClanLineupPlayers(clan, teamSize)
+      .map((player) => normalizeJid(player.jid))
+      .filter(Boolean)
+  );
   const readyText = clanIsReady(clan, teamSize) ? "listo" : "incompleto";
   const header = `*${clan.name}* (${players.length}/${teamSize}) - ${readyText}`;
   if (!players.length) {
     return `${header}\nSin jugadores inscritos.`;
   }
 
-  return `${header}\n${players.map((player, idx) => formatPlayerLine(player, idx)).join("\n")}`;
+  return `${header}\n${players
+    .map((player, idx) => {
+      const base = formatPlayerLine(player, idx);
+      const isStarter = lineupSet.has(normalizeJid(player.jid));
+      return isStarter ? `${base} [titular]` : base;
+    })
+    .join("\n")}`;
+}
+
+async function sendFreeFireCatalog(sock, from, msg, prefix, tournament = null) {
+  const title = tournament ? `FF Catalogo | ${tournament.name}` : "FF Catalogo";
+  const formatHint = tournament?.formatRules
+    ? `${tournament.formatRules.teamSize}v${tournament.formatRules.teamSize} | BO${tournament.formatRules.mapsBestOf}`
+    : "4v4 | BO1";
+
+  const sections = [
+    {
+      title: "Torneo",
+      rows: [
+        {
+          header: "Crear",
+          title: "Crear torneo",
+          description: "Crea torneo en el grupo",
+          id: `${prefix}ffcrear Torneo Semanal`,
+        },
+        {
+          header: "Reglas",
+          title: "Ver reglas",
+          description: `Formato actual: ${formatHint}`,
+          id: `${prefix}ffreglas`,
+        },
+        {
+          header: "Formato",
+          title: "Editar formato",
+          description: "Ejemplo 4v4 | bo3 | rbo7",
+          id: `${prefix}ffformato 4v4 | bo3 | rbo7`,
+        },
+      ],
+    },
+    {
+      title: "Clanes y jugadores",
+      rows: [
+        {
+          header: "Clan",
+          title: "Agregar clan",
+          description: "Registra clan nuevo",
+          id: `${prefix}ffclan add Clan Alpha`,
+        },
+        {
+          header: "Inscripcion",
+          title: "Inscribirme",
+          description: "Entrar a un clan",
+          id: `${prefix}ffinscribir Clan Alpha | MiNick`,
+        },
+        {
+          header: "Inscritos",
+          title: "Ver inscritos",
+          description: "Lista jugadores por clan",
+          id: `${prefix}ffinscritos`,
+        },
+        {
+          header: "Autoequipos",
+          title: "Auto-armar equipos",
+          description: "Titulares y suplentes",
+          id: `${prefix}ffautoequipos`,
+        },
+      ],
+    },
+    {
+      title: "VS",
+      rows: [
+        {
+          header: "Match",
+          title: "Programar VS",
+          description: "Crea enfrentamiento",
+          id: `${prefix}ffvs Clan Alpha | Clan Beta | R1`,
+        },
+        {
+          header: "Resultado",
+          title: "Cargar resultado",
+          description: "Ejemplo M1 | Clan Alpha | 2-1 | 15-10",
+          id: `${prefix}ffresultado M1 | Clan Alpha | 2-1 | 15-10`,
+        },
+        {
+          header: "Tabla",
+          title: "Ver tabla",
+          description: "Puntos y KD",
+          id: `${prefix}fftabla`,
+        },
+        {
+          header: "Partidos",
+          title: "Ver partidos",
+          description: "Pendientes y jugados",
+          id: `${prefix}ffpartidos`,
+        },
+      ],
+    },
+  ];
+
+  try {
+    await sock.sendMessage(
+      from,
+      {
+        text: "*FREE FIRE CATALOGO*\nSelecciona una accion rapida.",
+        title: "FSOCIETY BOT",
+        subtitle: title,
+        footer: "Torneos Free Fire",
+        interactiveButtons: [
+          {
+            name: "single_select",
+            buttonParamsJson: JSON.stringify({
+              title: "Abrir catalogo Free Fire",
+              sections,
+            }),
+          },
+        ],
+        ...global.channelInfo,
+      },
+      { quoted: msg }
+    );
+    return;
+  } catch {}
+
+  await sock.sendMessage(
+    from,
+    {
+      text:
+        `*FREE FIRE CATALOGO*\n\n` +
+        `- ${prefix}ffreglas\n` +
+        `- ${prefix}ffformato 4v4 | bo3 | rbo7\n` +
+        `- ${prefix}ffclan add Clan Alpha\n` +
+        `- ${prefix}ffinscribir Clan Alpha | MiNick\n` +
+        `- ${prefix}ffinscritos\n` +
+        `- ${prefix}ffautoequipos\n` +
+        `- ${prefix}ffvs Clan Alpha | Clan Beta | R1\n` +
+        `- ${prefix}ffresultado M1 | Clan Alpha | 2-1 | 15-10\n` +
+        `- ${prefix}fftabla`,
+      ...global.channelInfo,
+    },
+    { quoted: msg }
+  );
 }
 
 function updateTournamentFormat(tournament, textInput) {
@@ -757,6 +1031,8 @@ function updateTournamentFormat(tournament, textInput) {
 function buildUsage(prefix = ".") {
   return (
     `*FREE FIRE TORNEOS*\n\n` +
+    `Catalogo rapido:\n` +
+    `- ${prefix}ffcatalogo\n\n` +
     `Crear torneo (admin):\n` +
     `- ${prefix}ffcrear Nombre del torneo\n\n` +
     `Formato y reglas (admin):\n` +
@@ -770,7 +1046,9 @@ function buildUsage(prefix = ".") {
     `- ${prefix}ffinscribir Clan Alpha | TuNick\n` +
     `- ${prefix}ffbaja\n` +
     `- ${prefix}ffinscritos\n` +
-    `- ${prefix}ffinscritos Clan Alpha\n\n` +
+    `- ${prefix}ffinscritos Clan Alpha\n` +
+    `- ${prefix}ffautoequipos\n` +
+    `- ${prefix}ffautoequipos Clan Alpha\n\n` +
     `Programar VS (admin):\n` +
     `- ${prefix}ffvs Clan A | Clan B | Ronda 1\n\n` +
     `Resultado (admin):\n` +
@@ -794,6 +1072,8 @@ export default {
   command: [
     "ff",
     "freefire",
+    "ffcatalogo",
+    "ffcat",
     "ffcrear",
     "ffclan",
     "ffclanes",
@@ -805,6 +1085,9 @@ export default {
     "ffleave",
     "ffinscritos",
     "ffjugadores",
+    "ffautoequipos",
+    "ffautoequipo",
+    "fflineup",
     "ffvs",
     "ffresultado",
     "fftabla",
@@ -843,6 +1126,8 @@ export default {
     const normalizedCommand = normalizeText(commandName).toLowerCase();
     const actionFromAliasMap = {
       ffcrear: "crear",
+      ffcatalogo: "catalogo",
+      ffcat: "catalogo",
       ffclan: "clan",
       ffclanes: "clanes",
       ffformato: "formato",
@@ -853,6 +1138,9 @@ export default {
       ffleave: "baja",
       ffinscritos: "inscritos",
       ffjugadores: "inscritos",
+      ffautoequipos: "autoequipos",
+      ffautoequipo: "autoequipos",
+      fflineup: "autoequipos",
       ffvs: "vs",
       ffresultado: "resultado",
       fftabla: "tabla",
@@ -867,6 +1155,11 @@ export default {
     if (!action || action === "ff" || action === "freefire" || action === "menu" || action === "help") {
       action = "help";
       payloadArgs = [];
+    }
+
+    if (action === "catalogo") {
+      await sendFreeFireCatalog(sock, from, msg, prefix, ensureTournament(from));
+      return;
     }
 
     if (action === "crear") {
@@ -1072,10 +1365,10 @@ export default {
             result.existed
               ? `Actualice tu registro en *${result.clan.name}*.\n` +
                 `Nick: *${result.player.nick}*\n` +
-                `Cupos: *${players}/${teamSize}*`
+                `Inscritos: *${players}* | Titulares: *${teamSize}*`
               : `Inscripcion completada en *${result.clan.name}*.\n` +
                 `Jugador: *${result.player.nick}*\n` +
-                `Cupos: *${players}/${teamSize}*`,
+                `Inscritos: *${players}* | Titulares: *${teamSize}*`,
           ...global.channelInfo,
         },
         { quoted: msg }
@@ -1144,6 +1437,31 @@ export default {
             `Torneo: *${tournament.name}*\n` +
             `Formato: *${teamSize}v${teamSize}*\n\n` +
             `${blocks}`,
+          ...global.channelInfo,
+        },
+        { quoted: msg }
+      );
+    }
+
+    if (action === "autoequipos") {
+      if (!requireAdmin({ esAdmin, esOwner })) {
+        return sock.sendMessage(from, { text: "Solo admin/owner puede auto-armar equipos.", ...global.channelInfo }, { quoted: msg });
+      }
+
+      const clanFilter = normalizeText(payloadArgs.join(" "));
+      const result = autoBuildLineups(tournament, clanFilter);
+      if (!result.ok) {
+        return sock.sendMessage(from, { text: result.message, ...global.channelInfo }, { quoted: msg });
+      }
+
+      store.scheduleSave();
+      return sock.sendMessage(
+        from,
+        {
+          text:
+            `*AUTO-EQUIPOS APLICADO*\n` +
+            `Formato: *${result.teamSize}v${result.teamSize}*\n\n` +
+            `${buildAutoLineupSummary(result.rows, result.teamSize)}`,
           ...global.channelInfo,
         },
         { quoted: msg }
