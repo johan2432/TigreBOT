@@ -530,6 +530,7 @@ export default {
         : ["No hay subbots ocupados ahora mismo."];
       const sections = buildOwnerInteractiveSections(ownerBots, prefix);
 
+      let interactiveSent = false;
       try {
         if (sections.length) {
           await sock.sendMessage(
@@ -556,9 +557,14 @@ export default {
             },
             quoted
           );
+          interactiveSent = true;
         }
       } catch (error) {
         console.error("No pude enviar menu owner de subbots:", error?.message || error);
+      }
+
+      if (interactiveSent) {
+        return;
       }
 
       return sock.sendMessage(
