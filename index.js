@@ -300,6 +300,20 @@ function normalizeMaintenanceMode(value) {
   return "off";
 }
 
+function normalizeErrorVisibilityMode(value) {
+  const normalized = String(value || "off").trim().toLowerCase();
+
+  if (["on", "visible", "user", "public"].includes(normalized)) {
+    return "user";
+  }
+
+  if (["owner", "debug", "full", "detallado"].includes(normalized)) {
+    return "owner";
+  }
+
+  return "off";
+}
+
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -479,6 +493,9 @@ function ensureSystemSettings(currentSettings) {
       .trim()
       .slice(0, 139);
   currentSettings.system.subbotPhoto = String(currentSettings.system.subbotPhoto || "").trim();
+  currentSettings.system.errorVisibilityMode = normalizeErrorVisibilityMode(
+    currentSettings.system.errorVisibilityMode
+  );
 
   if (!isPlainObject(currentSettings.system.economy)) {
     currentSettings.system.economy = {};
@@ -2452,6 +2469,106 @@ async function sendCommandTimeoutNotice(context, error) {
   }
 }
 
+function getSafeCommandErrorText(error) {
+  const raw = String(error?.message || error || "").trim();
+  const lower = raw.toLowerCase();
+
+  if (
+    lower.includes("internal ") ||
+    lower.includes("http 4") ||
+    lower.includes("http 5") ||
+    lower.includes("unauthorized") ||
+    lower.includes("forbidden") ||
+    lower.includes("timeout") ||
+    lower.includes("timed out") ||
+    lower.includes("econnreset") ||
+    lower.includes("eai_again") ||
+    lower.includes("socket hang up")
+  ) {
+    return "Error temporal del proveedor. Intenta de nuevo en unos segundos.";
+  }
+
+  if (lower.includes("not a group") || lower.includes("solo funciona en grupos")) {
+    return "Este comando necesita un chat de grupo para funcionar.";
+  }
+
+  if (!raw) {
+    return "Ocurrio un error inesperado al ejecutar el comando.";
+  }
+
+  return raw.slice(0, 160);
+}
+
+function getOwnerAlertTargets() {
+  const targets = [];
+
+  for (const ownerId of OWNER_IDS || []) {
+    const ownerJid = String(ownerId || "").trim();
+    if (!ownerJid) continue;
+
+    if (ownerJid.endsWith("@s.whatsapp.net")) {
+      targets.push(ownerJid);
+      continue;
+    }
+
+    if (ownerJid.endsWith("@lid")) {
+      targets.push(ownerJid);
+      continue;
+    }
+  }
+
+  return Array.from(new Set(targets));
+}
+
+async function sendVisibleCommandErrorNotice(botState, context, error) {
+  if (!context?.sock || !context?.from) return;
+  if (isTaskTimeoutError(error)) return;
+
+  const visibility = getErrorVisibilityState();
+  if (!visibility.enabled) return;
+
+  const commandName = String(
+    context?.commandName || context?.cmd?.name || "comando"
+  ).trim();
+  const userText = getSafeCommandErrorText(error);
+
+  try {
+    await context.sock.sendMessage(
+      context.from,
+      {
+        text:
+          `⚠️ Ocurrio un error en *${commandName || "comando"}*.\n` +
+          `${userText}`,
+        ...global.channelInfo,
+      },
+      getQuoteOptions(context.msg)
+    );
+  } catch {}
+
+  if (!visibility.ownerDetails || context.esOwner) {
+    return;
+  }
+
+  const targets = getOwnerAlertTargets().slice(0, 3);
+  if (!targets.length) return;
+
+  const detailText =
+    `🧩 *ERROR BOT (${String(botState?.config?.label || "MAIN")})*\n\n` +
+    `Comando: *${commandName || "desconocido"}*\n` +
+    `Chat: *${String(context.from || "-").slice(0, 120)}*\n` +
+    `Sender: *${String(context.sender || "-").slice(0, 120)}*\n` +
+    `Detalle: ${String(error?.message || error || "sin detalle").slice(0, 900)}`;
+
+  for (const target of targets) {
+    try {
+      await context.sock.sendMessage(target, {
+        text: detailText,
+        ...global.channelInfo,
+      });
+    } catch {}
+  }
+}
+
 function ensureBotState(config) {
   const existing = botStates.get(config.id);
   if (existing) {
@@ -3354,6 +3471,24 @@ function setMaintenanceState(mode, message = "") {
   saveSettingsFile();
   refreshBotConfigCache();
   return getMaintenanceState();
+}
+
+function getErrorVisibilityState() {
+  const mode = normalizeErrorVisibilityMode(settings?.system?.errorVisibilityMode);
+  return {
+    mode,
+    enabled: mode !== "off",
+    ownerDetails: mode === "owner",
+    label: mode === "owner" ? "VISIBLE + OWNER" : mode === "user" ? "VISIBLE" : "OFF",
+  };
+}
+
+function setErrorVisibilityMode(mode = "off") {
+  ensureSystemSettings(settings);
+  settings.system.errorVisibilityMode = normalizeErrorVisibilityMode(mode);
+  saveSettingsFile();
+  refreshBotConfigCache();
+  return getErrorVisibilityState();
 }
 
 function isDownloadCommand(cmd) {
@@ -6894,6 +7029,8 @@ global.botRuntime = {
     getWeeklySnapshot(Math.max(1, Math.min(15, Number(limit || 5)))),
   getMaintenanceState: () => getMaintenanceState(),
   setMaintenanceState: (mode, message = "") => setMaintenanceState(mode, message),
+  getErrorVisibilityState: () => getErrorVisibilityState(),
+  setErrorVisibilityMode: (mode = "off") => setErrorVisibilityMode(mode),
   getResilienceState: () => getResilienceSnapshot(),
   setResilienceConfig: (patch = {}) => setResilienceConfig(patch),
   clearResilienceCommand: (commandName) => clearResilienceCommand(commandName),
@@ -7066,6 +7203,7 @@ async function handleIncomingMessages(botState, sock, messages) {
           if (isTaskTimeoutError(err)) {
             await sendCommandTimeoutNotice(commandContext, err);
           }
+          await sendVisibleCommandErrorNotice(botState, commandContext, err);
           console.error(`${getBotTag(botState)} Error comando concurrente:`, err);
         });
         continue;
@@ -7095,6 +7233,9 @@ async function handleIncomingMessages(botState, sock, messages) {
       }
       if (activeCommandContext && isTaskTimeoutError(err)) {
         await sendCommandTimeoutNotice(activeCommandContext, err);
+      }
+      if (activeCommandContext) {
+        await sendVisibleCommandErrorNotice(botState, activeCommandContext, err);
       }
       console.error(`${getBotTag(botState)} Error comando:`, err);
     }
