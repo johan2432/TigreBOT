@@ -8,6 +8,11 @@ function getPrefix(settings) {
 function buildFallbackText(prefix) {
   return (
     `*MENU FREE FIRE*\n\n` +
+    `Eventos/Torneos:\n` +
+    `- ${prefix}evento\n` +
+    `- ${prefix}evento crear ff\n` +
+    `- ${prefix}evento unir\n` +
+    `- ${prefix}evento equipos\n\n` +
     `Torneo:\n` +
     `- ${prefix}ffcrear Torneo Semanal\n` +
     `- ${prefix}ffreglas\n` +
@@ -42,6 +47,15 @@ export default {
     const prefix = getPrefix(settings);
 
     const sections = [
+      {
+        title: "Modo evento/torneo",
+        rows: [
+          { header: "Panel", title: "Abrir panel de evento", description: "Inscripciones por botones", id: `${prefix}evento` },
+          { header: "Plantilla", title: "Crear evento Free Fire", description: "Torneo FF 4v4 listo", id: `${prefix}evento crear ff` },
+          { header: "Inscripcion", title: "Unirme al evento", description: "Registro automatico con tu numero", id: `${prefix}evento unir` },
+          { header: "Equipos", title: "Auto-armar equipos", description: "Genera equipos por formato", id: `${prefix}evento equipos` },
+        ],
+      },
       {
         title: "Torneo",
         rows: [
