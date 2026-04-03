@@ -4,9 +4,9 @@ import {
 } from "../../lib/group-compat.js";
 
 export default {
-  command: ["tagall"],
+  command: ["tagall", "invocar", "invocartodos", "llamartodos", "mencionartodos"],
   category: "grupo",
-  description: "Etiqueta a todos",
+  description: "Invoca y etiqueta a todos los miembros del grupo",
   groupOnly: true,
   adminOnly: true,
 
@@ -19,7 +19,7 @@ export default {
 
     const texto = args.length
       ? args.join(" ")
-      : "📣 *Tagall*";
+      : "📣 *Invocacion general del grupo*";
 
     const lines = participants
       .map((participant) => `• ${getParticipantDisplayTag(participant, participant?.id)}`)
