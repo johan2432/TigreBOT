@@ -54,7 +54,7 @@ function findCommand(comandos, name = "") {
 
 export default {
   name: "explicar",
-  command: ["explicar", "helpcmd", "cmdinfo"],
+  command: ["explicar", "explicarcomando", "helpcmd", "cmdinfo"],
   category: "sistema",
   description: "Explica como usar un comando sin necesidad de IA",
 
