@@ -11,7 +11,7 @@ const API_TIKTOK_URL = `${API_BASE}/ttdlmp4`;
 
 const COOLDOWN_TIME = 0;
 const DEFAULT_VIDEO_QUALITY = "2";
-const QUALITY_FALLBACK_ORDER = ["2", "1", "hd", "best"];
+const QUALITY_FALLBACK_ORDER = ["2", "1"];
 const API_LANG = "es";
 const REQUEST_TIMEOUT = 60000;
 const MAX_VIDEO_BYTES = 80 * 1024 * 1024;
@@ -159,7 +159,7 @@ function normalizeTikTokQuality(value = "") {
   const normalized = String(value || "").trim().toLowerCase();
   if (!normalized) return "";
 
-  if (["hd", "best", "alta", "high"].includes(normalized)) return "hd";
+  if (["hd", "best", "alta", "high"].includes(normalized)) return "2";
   if (["sd", "low", "baja", "lite"].includes(normalized)) return "2";
   if (["1", "2", "3", "4", "5"].includes(normalized)) return normalized;
 
@@ -185,7 +185,7 @@ function buildTikTokQualityCandidates(primary = "") {
 
 function formatTikTokQualityLabel(quality = "") {
   const q = String(quality || "").trim().toLowerCase();
-  if (q === "hd" || q === "best") return "HD";
+  if (q === "hd" || q === "best") return "Normal";
   if (/^\d+$/.test(q)) return `Slot ${q}`;
   return q || DEFAULT_VIDEO_QUALITY;
 }
