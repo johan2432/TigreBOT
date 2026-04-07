@@ -13,8 +13,8 @@ const VIDEO_ENDPOINTS = [
 
 const LINK_TIMEOUT_FAST = 90000;
 const LINK_TIMEOUT_STABLE = 210000;
-const FAST_QUALITY_CANDIDATES = ["240p", "360p", "144p"];
-const STABLE_QUALITY_CANDIDATES = ["360p", "240p", "144p"];
+const VIDEO_QUALITIES = ["1080p", "720p", "480p", "360p", "240p", "144p"];
+const DEFAULT_VIDEO_QUALITY = "360p";
 const COOLDOWN_TIME = 0;
 const LINK_CACHE_TTL_MS = 8 * 60 * 1000;
 const LINK_RETRY_ATTEMPTS = 2;
@@ -137,6 +137,59 @@ function resolveInput(ctx) {
   return argsText || quotedText || "";
 }
 
+function qualityValue(quality) {
+  const match = String(quality || "").match(/(\d{3,4})/);
+  return match ? Number(match[1]) : 0;
+}
+
+function normalizeVideoQuality(value) {
+  const text = safeText(value).toLowerCase();
+  if (!text) return "";
+  if (text === "best" || text === "max" || text === "highest") return "1080p";
+  if (text === "fhd" || text === "fullhd") return "1080p";
+  if (text === "hd") return "720p";
+  const match = text.match(/(\d{3,4})p?$/);
+  if (!match) return "";
+  const normalized = `${match[1]}p`;
+  return VIDEO_QUALITIES.includes(normalized) ? normalized : "";
+}
+
+function qualityCandidatesFromRequested(requestedQuality) {
+  const normalized = normalizeVideoQuality(requestedQuality) || DEFAULT_VIDEO_QUALITY;
+  const selectedValue = qualityValue(normalized);
+  return VIDEO_QUALITIES.filter((item) => qualityValue(item) <= selectedValue);
+}
+
+function parseQualityAndInput(rawInput) {
+  const text = safeText(rawInput);
+  if (!text) {
+    return { query: "", quality: DEFAULT_VIDEO_QUALITY };
+  }
+
+  let query = text;
+  let quality = "";
+
+  const flagMatch = query.match(/--?(?:q|quality)\s*=?\s*([a-z0-9]+)/i);
+  if (flagMatch) {
+    quality = normalizeVideoQuality(flagMatch[1]);
+    query = safeText(query.replace(flagMatch[0], " "));
+  }
+
+  if (!quality) {
+    const [firstToken, ...rest] = query.split(/\s+/);
+    const firstQuality = normalizeVideoQuality(firstToken);
+    if (firstQuality) {
+      quality = firstQuality;
+      query = safeText(rest.join(" "));
+    }
+  }
+
+  return {
+    query,
+    quality: quality || DEFAULT_VIDEO_QUALITY,
+  };
+}
+
 function getCooldownRemaining(untilMs) {
   return Math.max(0, Math.ceil((untilMs - now()) / 1000));
 }
@@ -243,16 +296,17 @@ async function requestVideoLink(endpointUrl, videoUrl, quality, signal, { fastMo
   throw lastError || new Error("No se pudo preparar enlace de video.");
 }
 
-async function resolveVideoLink(videoUrl, signal) {
-  const cacheKey = `ytmp4:${videoUrl}`;
+async function resolveVideoLink(videoUrl, requestedQuality, signal) {
+  const qualityCandidates = qualityCandidatesFromRequested(requestedQuality);
+  const cacheKey = `ytmp4:${videoUrl}:${qualityCandidates.join(",")}`;
   const cached = readLinkCache(cacheKey);
   if (cached?.streamUrl) {
     return cached;
   }
 
   const strategies = [
-    { fastMode: true, timeoutMs: LINK_TIMEOUT_FAST, qualities: FAST_QUALITY_CANDIDATES },
-    { fastMode: false, timeoutMs: LINK_TIMEOUT_STABLE, qualities: STABLE_QUALITY_CANDIDATES },
+    { fastMode: true, timeoutMs: LINK_TIMEOUT_FAST, qualities: qualityCandidates },
+    { fastMode: false, timeoutMs: LINK_TIMEOUT_STABLE, qualities: qualityCandidates },
   ];
 
   let lastError = null;
@@ -335,13 +389,21 @@ export default {
       if (!input) {
         cooldowns.delete(userId);
         return sock.sendMessage(from, {
-          text: "❌ Uso: .ytmp4 <nombre o link de YouTube>",
+          text: "❌ Uso: .ytmp4 [360p|480p|720p|1080p] <nombre o link de YouTube>",
+          ...global.channelInfo,
+        });
+      }
+      const parsed = parseQualityAndInput(input);
+      if (!parsed.query) {
+        cooldowns.delete(userId);
+        return sock.sendMessage(from, {
+          text: "❌ Escribe titulo o link de YouTube despues de la calidad.",
           ...global.channelInfo,
         });
       }
 
       throwIfAborted(abortSignal);
-      const video = await resolveVideoInput(input, abortSignal);
+      const video = await resolveVideoInput(parsed.query, abortSignal);
       throwIfAborted(abortSignal);
 
       charged = await chargeDownloadRequest(ctx, {
@@ -357,14 +419,14 @@ export default {
       await sock.sendMessage(
         from,
         {
-          text: `🎬 Preparando video...\n\n📼 ${video.title}\n⚡ Modo rapido + fallback estable`,
+          text: `🎬 Preparando video...\n\n📼 ${video.title}\n🎚️ Pedido: ${parsed.quality}\n⚡ Fallback automatico`,
           ...global.channelInfo,
         },
         quoted
       );
 
       throwIfAborted(abortSignal);
-      const resolved = await resolveVideoLink(video.videoUrl, abortSignal);
+      const resolved = await resolveVideoLink(video.videoUrl, parsed.quality, abortSignal);
       throwIfAborted(abortSignal);
 
       await sendVideo(sock, from, quoted, {
