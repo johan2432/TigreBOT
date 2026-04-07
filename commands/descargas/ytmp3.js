@@ -10,7 +10,6 @@ const AUDIO_QUALITY = "128k";
 const REQUEST_TIMEOUT = 30000;
 const COOLDOWN_TIME = 0;
 const CACHE_TTL_MS = 10 * 60 * 1000;
-const SPEED_MODE_LINK = true;
 
 const cooldowns = new Map();
 const cache = new Map();
@@ -217,18 +216,6 @@ function getCooldownRemaining(untilMs) {
 }
 
 async function sendAudioFast(sock, from, quoted, { downloadUrl, fileName, title }) {
-  if (SPEED_MODE_LINK) {
-    await sock.sendMessage(
-      from,
-      {
-        text: `🎵 ${title}\n🔗 ${downloadUrl}\n\n⚡ Enlace directo rapido`,
-        ...global.channelInfo,
-      },
-      quoted
-    );
-    return;
-  }
-
   try {
     await sock.sendMessage(
       from,
@@ -250,7 +237,7 @@ async function sendAudioFast(sock, from, quoted, { downloadUrl, fileName, title 
       document: { url: downloadUrl },
       mimetype: "audio/mpeg",
       fileName,
-      caption: `🎵 ${title}\n🔗 ${downloadUrl}`,
+      caption: `🎵 ${title}`,
       ...global.channelInfo,
     },
     quoted
