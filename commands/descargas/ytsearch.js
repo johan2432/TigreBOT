@@ -105,7 +105,7 @@ function buildCardBody(item, index, query, prefix, mode = "detailed") {
       `➠ Duracion: ${item.duration}\n` +
       `➠ Vistas: ${views}\n` +
       `➠ URL: ${safeUrl}\n\n` +
-      `Copy = MP3 | MP4: ${prefix}ytmp4 <url>`
+      `Copy = MP4: ${prefix}ytmp4 <url>`
     );
   }
 
@@ -119,23 +119,15 @@ function buildCardBody(item, index, query, prefix, mode = "detailed") {
     `➠ Vistas: ${views}\n` +
     `➠ Publicado: ${published}\n` +
     `➠ URL: ${safeUrl}\n\n` +
-    `Copy = ${prefix}ytmp3 <url>`
+    `Copy = ${prefix}ytmp4 <url>`
   );
 }
 
-function buildCardButtons(item, prefix, mode = "single_copy_mp3") {
-  const cmdMp3 = buildCommand(prefix, "ytmp3", item.url);
+function buildCardButtons(item, prefix, mode = "single_copy_mp4") {
   const cmdMp4 = buildCommand(prefix, "ytmp4", item.url);
 
-  if (mode === "dual_quick") {
+  if (mode === "single_quick_mp4") {
     return [
-      {
-        name: "quick_reply",
-        buttonParamsJson: JSON.stringify({
-          display_text: "🎵 MP3",
-          id: cmdMp3,
-        }),
-      },
       {
         name: "quick_reply",
         buttonParamsJson: JSON.stringify({
@@ -146,15 +138,8 @@ function buildCardButtons(item, prefix, mode = "single_copy_mp3") {
     ];
   }
 
-  if (mode === "dual_copy") {
+  if (mode === "single_copy_mp4") {
     return [
-      {
-        name: "cta_copy",
-        buttonParamsJson: JSON.stringify({
-          display_text: "Copy MP3",
-          copy_code: cmdMp3,
-        }),
-      },
       {
         name: "cta_copy",
         buttonParamsJson: JSON.stringify({
@@ -165,30 +150,18 @@ function buildCardButtons(item, prefix, mode = "single_copy_mp3") {
     ];
   }
 
-  if (mode === "single_quick_mp3") {
-    return [
-      {
-        name: "quick_reply",
-        buttonParamsJson: JSON.stringify({
-          display_text: "Descargar MP3",
-          id: cmdMp3,
-        }),
-      },
-    ];
-  }
-
   return [
     {
       name: "cta_copy",
       buttonParamsJson: JSON.stringify({
         display_text: "Copy",
-        copy_code: cmdMp3,
+        copy_code: cmdMp4,
       }),
     },
   ];
 }
 
-function buildCarouselCards(results, prefix, query, bodyMode = "detailed", buttonMode = "single_copy_mp3") {
+function buildCarouselCards(results, prefix, query, bodyMode = "detailed", buttonMode = "single_copy_mp4") {
   return results.map((item, index) => ({
     image: { url: item.thumbnail || DEFAULT_CAROUSEL_COVER },
     title: "YouTube - Resultado",
@@ -199,14 +172,14 @@ function buildCarouselCards(results, prefix, query, bodyMode = "detailed", butto
 }
 
 function buildResultRows(results, prefix, format) {
-  const command = format === "mp4" ? "ytmp4" : "ytmp3";
-  const icon = format === "mp4" ? "🎬" : "🎵";
+  const command = "ytmp4";
+  const icon = "🎬";
 
   return results.map((item, index) => ({
     header: `${index + 1}`,
     title: clipText(item.title || "Sin titulo", 72),
     description: clipText(
-      `${icon} ${format.toUpperCase()} | ⏱ ${item.duration || "N/D"} | 👤 ${item.author || "Canal"}`,
+      `${icon} MP4 | ⏱ ${item.duration || "N/D"} | 👤 ${item.author || "Canal"}`,
       72
     ),
     id: buildCommand(prefix, command, item.url),
@@ -223,20 +196,20 @@ async function sendCarouselResults(sock, from, quoted, query, results, prefix) {
 
   const attempts = [
     {
-      label: "image-detailed-dual-quick",
-      cards: buildCarouselCards(results, prefix, query, "detailed", "dual_quick"),
+      label: "image-detailed-mp4-quick",
+      cards: buildCarouselCards(results, prefix, query, "detailed", "single_quick_mp4"),
     },
     {
-      label: "image-compact-dual-copy",
-      cards: buildCarouselCards(results, prefix, query, "compact", "dual_copy"),
+      label: "image-compact-mp4-copy",
+      cards: buildCarouselCards(results, prefix, query, "compact", "single_copy_mp4"),
     },
     {
       label: "image-compact-single-copy",
-      cards: buildCarouselCards(results, prefix, query, "compact", "single_copy_mp3"),
+      cards: buildCarouselCards(results, prefix, query, "compact", "single_copy_mp4"),
     },
     {
       label: "image-minimal-single-quick",
-      cards: buildCarouselCards(results, prefix, query, "minimal", "single_quick_mp3"),
+      cards: buildCarouselCards(results, prefix, query, "minimal", "single_quick_mp4"),
     },
   ];
 
@@ -263,7 +236,6 @@ async function sendCarouselResults(sock, from, quoted, query, results, prefix) {
 }
 
 async function sendFallbackResults(sock, from, quoted, query, results, prefix) {
-  const mp3Rows = buildResultRows(results, prefix, "mp3");
   const mp4Rows = buildResultRows(results, prefix, "mp4");
 
   await sock.sendMessage(
@@ -271,16 +243,9 @@ async function sendFallbackResults(sock, from, quoted, query, results, prefix) {
     {
       text: `Resultados para: ${clipText(query, 80)}`,
       title: "YouTube Search",
-      subtitle: "Selecciona formato",
+      subtitle: "MP4",
       footer: "FSOCIETY BOT",
       interactiveButtons: [
-        {
-          name: "single_select",
-          buttonParamsJson: JSON.stringify({
-            title: "🎵 Descargar MP3",
-            sections: [{ title: "Resultados MP3", rows: mp3Rows }],
-          }),
-        },
         {
           name: "single_select",
           buttonParamsJson: JSON.stringify({

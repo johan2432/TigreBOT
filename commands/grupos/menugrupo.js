@@ -21,7 +21,7 @@ function buildFallbackText(prefix) {
     `- ${prefix}votar 1\n\n` +
     `IA Util:\n` +
     `- ${prefix}resumirchat\n` +
-    `- ${prefix}explicarcomando ytmp3\n` +
+    `- ${prefix}explicarcomando ytmp4\n` +
     `- ${prefix}traducirvoz en (respondiendo audio)\n`
   );
 }
@@ -119,7 +119,7 @@ export default {
             header: "COMANDO",
             title: "Explicar comando",
             description: "Como usar cualquier comando",
-            id: `${prefix}explicarcomando ytmp3`,
+            id: `${prefix}explicarcomando ytmp4`,
           },
           {
             header: "VOZ",

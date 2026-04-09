@@ -41,13 +41,6 @@ export default {
         console.error('Error descargando thumbnail:', e)
       }
 
-      const mp3Rows = videos.map((v, i) => ({
-        header: `${i + 1}`,
-        title: String(v.title || 'Sin título').slice(0, 72),
-        description: `🎵 MP3 | ⏱ ${v.timestamp || '??:??'} | 👤 ${v.author?.name || 'Desconocido'}`.slice(0, 72),
-        id: `.ytmp3 ${v.url}`
-      }))
-
       const mp4Rows = videos.map((v, i) => ({
         header: `${i + 1}`,
         title: String(v.title || 'Sin título').slice(0, 72),
@@ -64,7 +57,7 @@ export default {
               `🎵 *FSOCIETY BOT*\n\n` +
               `🔎 Resultado para: *${query}*\n` +
               `📌 Primer resultado: *${videos[0].title}*\n\n` +
-              `Ahora selecciona si quieres descargar en MP3 o MP4.`
+              `Selecciona un resultado para MP4. El scraper esta reiniciado para rehacerlo limpio.`
           },
           { quoted: m }
         )
@@ -75,7 +68,7 @@ export default {
             text:
               `🎵 *FSOCIETY BOT*\n\n` +
               `🔎 Resultado para: *${query}*\n\n` +
-              `Selecciona si quieres descargar en MP3 o MP4.`
+              `Selecciona un resultado para MP4. El scraper esta reiniciado para rehacerlo limpio.`
           },
           { quoted: m }
         )
@@ -86,21 +79,9 @@ export default {
         {
           text: `Resultados para: ${query}`,
           title: 'FSOCIETY BOT',
-          subtitle: 'Selecciona formato',
+          subtitle: 'MP4',
           footer: 'Descargas YouTube',
           interactiveButtons: [
-            {
-              name: 'single_select',
-              buttonParamsJson: JSON.stringify({
-                title: '🎵 Descargar MP3',
-                sections: [
-                  {
-                    title: 'Resultados MP3',
-                    rows: mp3Rows
-                  }
-                ]
-              })
-            },
             {
               name: 'single_select',
               buttonParamsJson: JSON.stringify({

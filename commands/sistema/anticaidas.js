@@ -97,7 +97,7 @@ export default {
           `${prefix}anticaidas on\n` +
           `${prefix}anticaidas off\n` +
           `${prefix}anticaidas config 4 15\n` +
-          `${prefix}anticaidas clear ytmp3`,
+          `${prefix}anticaidas clear ytmp4`,
         ...global.channelInfo,
       },
       { quoted: msg }

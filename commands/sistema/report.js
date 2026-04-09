@@ -49,7 +49,7 @@ export default {
           text:
             "Escribe tu reporte junto al comando.\n\n" +
             "Ejemplo:\n" +
-            `${Array.isArray(settings?.prefix) ? settings.prefix[0] : settings?.prefix || "."}report el comando ytmp3 fallo`,
+            `${Array.isArray(settings?.prefix) ? settings.prefix[0] : settings?.prefix || "."}report el comando ytmp4 fallo`,
           ...global.channelInfo,
         },
         { quoted: msg }

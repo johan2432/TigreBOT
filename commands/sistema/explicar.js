@@ -71,7 +71,7 @@ export default {
             `Uso:\n` +
             `• ${prefix}explicar <comando>\n\n` +
             `Ejemplos:\n` +
-            `• ${prefix}explicar ytmp3\n` +
+            `• ${prefix}explicar ytmp4\n` +
             `• ${prefix}explicar tiktoksearch`,
           ...global.channelInfo,
         },
