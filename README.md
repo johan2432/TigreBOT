@@ -92,8 +92,9 @@ Tambien es importante conservar estas rutas si usas hosting o reinicios automati
 ## Instalacion Rapida
 
 ```bash
-git clone https://github.com/DevYerZx/fsociety-bot.git
-cd fsociety-bot
+git clone 
+https://github.com/johan2432/TigreBOT
+cd TigreBOT
 npm install
 npm start
 ```
@@ -117,8 +118,8 @@ termux-setup-storage
 ### 3. Clona el repositorio
 
 ```bash
-git clone https://github.com/DevYerZx/fsociety-bot.git
-cd fsociety-bot
+git clone https://github.com/johan2432/TigreBOT
+cd TigreBOT
 ```
 
 ### 4. Instala paquetes de Node
@@ -153,8 +154,8 @@ sudo apt install -y nodejs
 ### Clonar e instalar
 
 ```bash
-git clone https://github.com/DevYerZx/fsociety-bot.git
-cd fsociety-bot
+git clone https://github.com/johan2432/TigreBOT
+cd TigreBOT
 npm install
 ```
 
@@ -177,8 +178,8 @@ npm start
 Abre PowerShell dentro de la carpeta donde quieras guardar el bot y ejecuta:
 
 ```powershell
-git clone https://github.com/DevYerZx/fsociety-bot.git
-cd fsociety-bot
+git clone https://github.com/johan2432/TigreBOT
+cd TigreBOT
 npm install
 npm start
 ```
