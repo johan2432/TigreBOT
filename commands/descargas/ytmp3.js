@@ -13,6 +13,7 @@ const MAX_AUDIO_BYTES = 80 * 1024 * 1024;
 const LINK_RETRY_ATTEMPTS = 4;
 const COOLDOWN_TIME = 0;
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const SEND_RETRY_ATTEMPTS = 2;
 
 const cooldowns = new Map();
 const cache = new Map();
@@ -144,10 +145,27 @@ function shouldRetryError(error) {
     text.includes("socket hang up") ||
     text.includes("econnreset") ||
     text.includes("etimedout") ||
+    text.includes("410") ||
+    text.includes("expired") ||
+    text.includes("expirado") ||
+    text.includes("invalido") ||
+    text.includes("invalid") ||
     text.includes("service unavailable") ||
     text.includes("temporarily") ||
     text.includes("media unavailable") ||
     text.includes("internal")
+  );
+}
+
+function isExpiredLinkError(error) {
+  const text = String(error?.message || error || "").toLowerCase();
+  return (
+    text.includes("410") ||
+    text.includes("expired") ||
+    text.includes("expirado") ||
+    text.includes("link invalido") ||
+    text.includes("invalid link") ||
+    text.includes("not available")
   );
 }
 
@@ -231,12 +249,6 @@ async function resolveVideo(rawInput, signal) {
 }
 
 async function resolveMp3Link(videoUrl, signal, preferredTitle = "") {
-  const cacheKey = `ytmp3:${videoUrl}:${AUDIO_QUALITY}`;
-  const cached = readCache(cacheKey);
-  if (cached?.downloadUrl) {
-    return cached;
-  }
-
   let payload = null;
   let lastError = null;
   for (let attempt = 1; attempt <= LINK_RETRY_ATTEMPTS; attempt += 1) {
@@ -278,7 +290,6 @@ async function resolveMp3Link(videoUrl, signal, preferredTitle = "") {
     title: cleanedTitle,
     fileName: `${fileBase}.mp3`,
   };
-  writeCache(cacheKey, result);
   return result;
 }
 
@@ -296,6 +307,9 @@ function toFriendlyError(error) {
   }
   if (low.includes("429") || low.includes("too many requests")) {
     return "Hay muchas solicitudes ahora. Intenta en unos segundos.";
+  }
+  if (low.includes("410") || low.includes("expirado") || low.includes("expired")) {
+    return "El enlace temporal expiro mientras WhatsApp lo abria. Reintenta y se generara uno nuevo.";
   }
   if (low.includes("media unavailable")) {
     return "Ese audio no esta disponible ahora mismo. Prueba en unos segundos o con otro video.";
@@ -376,6 +390,32 @@ async function sendAudioFast(sock, from, quoted, { downloadUrl, fileName, title,
   });
 }
 
+async function sendAudioWithFreshLink(sock, from, quoted, { videoUrl, initialMp3, fallbackTitle, signal }) {
+  let mp3 = initialMp3;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= SEND_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      await sendAudioFast(sock, from, quoted, {
+        downloadUrl: mp3.downloadUrl,
+        fileName: mp3.fileName,
+        title: mp3.title || fallbackTitle,
+        signal,
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= SEND_RETRY_ATTEMPTS || (!isExpiredLinkError(error) && !shouldRetryError(error))) {
+        break;
+      }
+      await sleep(800 * attempt);
+      mp3 = await resolveMp3Link(videoUrl, signal, fallbackTitle);
+    }
+  }
+
+  throw lastError || new Error("No se pudo enviar el audio.");
+}
+
 export default {
   command: ["ytmp3", "ytmp3dv"],
   category: "descarga",
@@ -435,10 +475,10 @@ export default {
       const mp3 = await resolveMp3Link(video.videoUrl, abortSignal, video.title);
       throwIfAborted(abortSignal);
 
-      await sendAudioFast(sock, from, quoted, {
-        downloadUrl: mp3.downloadUrl,
-        fileName: mp3.fileName,
-        title: mp3.title || video.title,
+      await sendAudioWithFreshLink(sock, from, quoted, {
+        videoUrl: video.videoUrl,
+        initialMp3: mp3,
+        fallbackTitle: video.title,
         signal: abortSignal,
       });
     } catch (error) {

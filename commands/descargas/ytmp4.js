@@ -19,12 +19,11 @@ const MAX_VIDEO_BYTES = 95 * 1024 * 1024;
 const VIDEO_QUALITIES = ["1080p", "720p", "480p", "360p", "240p", "144p"];
 const DEFAULT_VIDEO_QUALITY = "360p";
 const COOLDOWN_TIME = 0;
-const LINK_CACHE_TTL_MS = 8 * 60 * 1000;
 const LINK_RETRY_ATTEMPTS = 2;
 const ENDPOINT_UNHEALTHY_TTL_MS = 5 * 60 * 1000;
+const SEND_RETRY_ATTEMPTS = 2;
 
 const cooldowns = new Map();
-const linkCache = new Map();
 const endpointUnhealthyUntil = new Map();
 
 function now() {
@@ -33,19 +32,6 @@ function now() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function readLinkCache(key) {
-  const hit = linkCache.get(key);
-  if (!hit || hit.expiresAt <= now()) {
-    linkCache.delete(key);
-    return null;
-  }
-  return hit.value;
-}
-
-function writeLinkCache(key, value) {
-  linkCache.set(key, { value, expiresAt: now() + LINK_CACHE_TTL_MS });
 }
 
 function safeText(value, fallback = "") {
@@ -225,8 +211,25 @@ function shouldRetryError(error) {
     text.includes("too many requests") ||
     text.includes("unauthorized") ||
     text.includes("401") ||
+    text.includes("410") ||
+    text.includes("expired") ||
+    text.includes("expirado") ||
+    text.includes("invalido") ||
+    text.includes("invalid") ||
     text.includes("temporarily") ||
     text.includes("internal")
+  );
+}
+
+function isExpiredLinkError(error) {
+  const text = String(error?.message || error || "").toLowerCase();
+  return (
+    text.includes("410") ||
+    text.includes("expired") ||
+    text.includes("expirado") ||
+    text.includes("link invalido") ||
+    text.includes("invalid link") ||
+    text.includes("not available")
   );
 }
 
@@ -266,6 +269,9 @@ function toFriendlyError(error) {
   }
   if (lower.includes("429") || lower.includes("too many requests")) {
     return "Hay muchas solicitudes ahora. Intenta en unos segundos.";
+  }
+  if (lower.includes("410") || lower.includes("expirado") || lower.includes("expired")) {
+    return "El enlace temporal expiro mientras WhatsApp lo abria. Reintenta y se generara uno nuevo.";
   }
   if (lower.includes("unauthorized") || lower.includes("401")) {
     return "Servicio temporalmente inestable para video. Reintenta en unos segundos.";
@@ -358,7 +364,8 @@ async function requestVideoLink(endpointUrl, videoUrl, quality, signal, { fastMo
       }
       const title = safeText(payload?.title, "video youtube");
       const fileName = normalizeMp4Name(payload?.filename || payload?.fileName || title);
-      return { streamUrl, title, fileName };
+      const resolvedQuality = safeText(payload?.quality || payload?.provider_quality || quality, quality);
+      return { streamUrl, title, fileName, quality: resolvedQuality };
     } catch (error) {
       lastError = error;
       if (isUnauthorizedLikeError(error)) {
@@ -375,11 +382,6 @@ async function requestVideoLink(endpointUrl, videoUrl, quality, signal, { fastMo
 
 async function resolveVideoLink(videoUrl, requestedQuality, signal) {
   const qualityCandidates = qualityCandidatesFromRequested(requestedQuality);
-  const cacheKey = `ytmp4:${videoUrl}:${qualityCandidates.join(",")}`;
-  const cached = readLinkCache(cacheKey);
-  if (cached?.streamUrl) {
-    return cached;
-  }
 
   const selectedValue = qualityValue(requestedQuality || DEFAULT_VIDEO_QUALITY);
   const strategies =
@@ -405,9 +407,7 @@ async function resolveVideoLink(videoUrl, requestedQuality, signal) {
         attempted.add(dedupeKey);
         try {
           const resolved = await requestVideoLink(endpointUrl, videoUrl, quality, signal, strategy);
-          const result = { ...resolved, quality };
-          writeLinkCache(cacheKey, result);
-          return result;
+          return { ...resolved, quality: resolved.quality || quality };
         } catch (error) {
           lastError = error;
         }
@@ -487,6 +487,33 @@ async function sendVideo(sock, from, quoted, { streamUrl, title, fileName, quali
   });
 }
 
+async function sendVideoWithFreshLink(sock, from, quoted, { videoUrl, requestedQuality, initialResolved, fallbackTitle, signal }) {
+  let resolved = initialResolved;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= SEND_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      await sendVideo(sock, from, quoted, {
+        streamUrl: resolved.streamUrl,
+        title: safeText(resolved.title || fallbackTitle, "video youtube"),
+        fileName: normalizeMp4Name(resolved.fileName || fallbackTitle),
+        quality: resolved.quality || requestedQuality || DEFAULT_VIDEO_QUALITY,
+        signal,
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= SEND_RETRY_ATTEMPTS || (!isExpiredLinkError(error) && !shouldRetryError(error))) {
+        break;
+      }
+      await sleep(800 * attempt);
+      resolved = await resolveVideoLink(videoUrl, requestedQuality, signal);
+    }
+  }
+
+  throw lastError || new Error("No se pudo enviar el video.");
+}
+
 export default {
   command: ["ytmp4", "ytdlmp4", "ytaltmp4"],
   category: "descarga",
@@ -515,7 +542,7 @@ export default {
       if (!input) {
         cooldowns.delete(userId);
         return sock.sendMessage(from, {
-          text: "❌ Uso: .ytmp4 [360p|480p|720p|1080p] <nombre o link de YouTube>",
+          text: "❌ Uso: .ytmp4 <nombre o link>\nOpcional: .ytmp4 720p <nombre o link>\nPor defecto uso 360p.",
           ...global.channelInfo,
         });
       }
@@ -555,11 +582,11 @@ export default {
       const resolved = await resolveVideoLink(video.videoUrl, parsed.quality, abortSignal);
       throwIfAborted(abortSignal);
 
-      await sendVideo(sock, from, quoted, {
-        streamUrl: resolved.streamUrl,
-        title: safeText(resolved.title || video.title, "video youtube"),
-        fileName: normalizeMp4Name(resolved.fileName || video.title),
-        quality: resolved.quality || "auto",
+      await sendVideoWithFreshLink(sock, from, quoted, {
+        videoUrl: video.videoUrl,
+        requestedQuality: parsed.quality,
+        initialResolved: resolved,
+        fallbackTitle: video.title,
         signal: abortSignal,
       });
     } catch (error) {
