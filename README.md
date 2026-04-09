@@ -18,7 +18,7 @@
   <img src="assets/profile/fsociety-bot-profile.png" alt="FSociety Bot" width="150" />
 </p>
 
-<h1 align="center">FSociety Bot</h1>
+<h1 align="center">ŦIGŘ€Ş ₣ỮŘIØŞØŞ 🔥🐯🔥</h1>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Node.js-18%2B-43853D?style=for-the-badge&logo=node.js&logoColor=white" alt="Node.js 18+" />
