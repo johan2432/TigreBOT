@@ -15,7 +15,7 @@
 
 
 <p align="center">
-  <img src="assets/profile/assets/profile/fsociety-bot-profile.png" alt="FSociety Bot" width="150" />
+  <img src="assets/profile/fsociety-bot-profile.png" alt="FSociety Bot" width="150" />
 </p>
 
 <h1 align="center">FSociety Bot</h1>
