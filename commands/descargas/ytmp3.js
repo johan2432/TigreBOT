@@ -1,4 +1,10 @@
+import fs from "fs";
+import path from "path";
+import os from "os";
 import axios from "axios";
+import { pipeline } from "stream/promises";
+import { spawn } from "child_process";
+import { randomUUID } from "crypto";
 import { buildDvyerUrl, getDvyerBaseUrl } from "../../lib/api-manager.js";
 import { throwIfAborted } from "../../lib/command-abort.js";
 import { chargeDownloadRequest, refundDownloadCharge } from "../economia/download-access.js";
@@ -6,15 +12,18 @@ import { chargeDownloadRequest, refundDownloadCharge } from "../economia/downloa
 const API_BASE = getDvyerBaseUrl();
 const API_MP3_URL = buildDvyerUrl("/ytmp3");
 const API_SEARCH_URL = buildDvyerUrl("/ytsearch");
+const TMP_DIR = path.join(os.tmpdir(), "dvyer-ytmp3");
 const AUDIO_QUALITY = "128k";
 const REQUEST_TIMEOUT = 420000;
-const LOCAL_AUDIO_TIMEOUT = 240000;
+const LOCAL_AUDIO_TIMEOUT = 420000;
 const MAX_AUDIO_BYTES = 80 * 1024 * 1024;
+const AUDIO_AS_DOCUMENT_THRESHOLD = 60 * 1024 * 1024;
 const LINK_RETRY_ATTEMPTS = 4;
 const COOLDOWN_TIME = 0;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const SEND_RETRY_ATTEMPTS = 2;
 const AUDIO_SEARCH_LIMIT = 5;
+const FFMPEG_TIMEOUT_MS = 300000;
 const AUDIO_MIME_BY_EXTENSION = {
   mp3: "audio/mpeg",
   m4a: "audio/mp4",
@@ -50,6 +59,32 @@ function safeName(value, fallback = "audio") {
     .trim()
     .slice(0, 80);
   return clean || fallback;
+}
+
+function ensureTmpDir() {
+  try {
+    fs.mkdirSync(TMP_DIR, { recursive: true });
+  } catch {}
+}
+
+function deleteFileSafe(filePath) {
+  try {
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch {}
+}
+
+function cleanExtension(value, fallback = "mp3") {
+  const ext = String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return AUDIO_MIME_BY_EXTENSION[ext] ? ext : fallback;
+}
+
+function normalizeAudioFileName(name, fallbackBase = "audio", fallbackExt = "mp3") {
+  const parsed = path.parse(String(name || "").trim());
+  const ext = cleanExtension(parsed.ext.replace(/^\./, ""), fallbackExt);
+  const base = safeName(parsed.name || fallbackBase, fallbackBase);
+  return `${base}.${ext}`;
 }
 
 function displayTitle(value, fallback = "audio") {
@@ -175,6 +210,60 @@ function audioMimeFromExtension(extension) {
   return AUDIO_MIME_BY_EXTENSION[String(extension || "").toLowerCase()] || "audio/mpeg";
 }
 
+function extensionFromMime(mimetype = "") {
+  const value = String(mimetype || "").toLowerCase();
+  if (value.includes("mpeg") || value.includes("mp3")) return "mp3";
+  if (value.includes("mp4") || value.includes("m4a")) return "m4a";
+  if (value.includes("webm")) return "webm";
+  if (value.includes("ogg") || value.includes("opus")) return "ogg";
+  return "mp3";
+}
+
+function detectAudioFormat(filePath, fallbackExt = "mp3") {
+  try {
+    const fd = fs.openSync(filePath, "r");
+    const buffer = Buffer.alloc(16);
+    const bytesRead = fs.readSync(fd, buffer, 0, 16, 0);
+    fs.closeSync(fd);
+    const head = buffer.subarray(0, bytesRead);
+    if (head.length >= 3 && head.subarray(0, 3).toString("ascii") === "ID3") {
+      return { ext: "mp3", mimetype: "audio/mpeg", isMp3: true };
+    }
+    if (head.length >= 2 && head[0] === 0xff && (head[1] & 0xe0) === 0xe0) {
+      return { ext: "mp3", mimetype: "audio/mpeg", isMp3: true };
+    }
+    if (head.length >= 8 && head.subarray(4, 8).toString("ascii") === "ftyp") {
+      return { ext: "m4a", mimetype: "audio/mp4", isMp3: false };
+    }
+    if (head.length >= 4 && head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3) {
+      return { ext: "webm", mimetype: "audio/webm", isMp3: false };
+    }
+  } catch {}
+  const ext = cleanExtension(fallbackExt, "mp3");
+  return { ext, mimetype: audioMimeFromExtension(ext), isMp3: ext === "mp3" };
+}
+
+function parseFileNameFromDisposition(value = "") {
+  const header = String(value || "");
+  const encoded = header.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded.replace(/["']/g, ""));
+    } catch {
+      return encoded.replace(/["']/g, "");
+    }
+  }
+  return header.match(/filename="?([^";]+)"?/i)?.[1] || "";
+}
+
+function buildApiMp3FileUrl(videoUrl) {
+  const target = new URL(API_MP3_URL);
+  target.searchParams.set("mode", "file");
+  target.searchParams.set("url", videoUrl);
+  target.searchParams.set("quality", AUDIO_QUALITY);
+  return target.toString();
+}
+
 function pickDownloadUrl(payload) {
   return (
     payload?.direct_url_full ||
@@ -271,64 +360,186 @@ async function apiGet(url, params, signal) {
   return response.data;
 }
 
-async function fetchAudioBuffer(downloadUrl, signal) {
+async function readStreamText(stream, limit = 1200) {
+  return new Promise((resolve) => {
+    let text = "";
+    stream?.on?.("data", (chunk) => {
+      if (text.length < limit) {
+        text += Buffer.from(chunk).toString("utf-8");
+      }
+    });
+    stream?.on?.("end", () => resolve(text.slice(0, limit)));
+    stream?.on?.("error", () => resolve(text.slice(0, limit)));
+  });
+}
+
+async function downloadAudioFile(downloadUrl, { fileName, title, signal }) {
+  ensureTmpDir();
   const response = await axios.get(downloadUrl, {
     timeout: LOCAL_AUDIO_TIMEOUT,
-    responseType: "arraybuffer",
+    responseType: "stream",
     signal: signal || undefined,
-    maxContentLength: MAX_AUDIO_BYTES,
-    maxBodyLength: MAX_AUDIO_BYTES,
+    maxRedirects: 5,
     validateStatus: () => true,
     headers: {
-      "User-Agent": "Mozilla/5.0",
-      Accept: "audio/mpeg,audio/*,*/*",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      Accept: "audio/mpeg,audio/mp4,audio/*,*/*",
     },
   });
 
   if (response.status >= 400) {
-    throw new Error(`HTTP ${response.status}`);
+    const detail = hideProviderText(await readStreamText(response.data));
+    throw new Error(detail || `HTTP ${response.status}`);
   }
 
-  const buffer = Buffer.from(response.data || []);
-  if (!buffer.length) {
-    throw new Error("El audio llego vacio.");
-  }
-  if (buffer.length > MAX_AUDIO_BYTES) {
+  const contentLength = Number(response.headers?.["content-length"] || 0);
+  if (contentLength && contentLength > MAX_AUDIO_BYTES) {
     throw new Error("El audio es demasiado grande para enviarlo directo.");
   }
-  return buffer;
+
+  const headerName = parseFileNameFromDisposition(response.headers?.["content-disposition"]);
+  const contentType = String(response.headers?.["content-type"] || "").toLowerCase();
+  const fallbackExt = extensionFromMime(contentType);
+  const normalizedName = normalizeAudioFileName(headerName || fileName, safeName(title, "audio"), fallbackExt);
+  const outputPath = path.join(TMP_DIR, `${Date.now()}-${randomUUID()}-${normalizedName}`);
+  const outputStream = fs.createWriteStream(outputPath);
+  let downloaded = 0;
+
+  response.data.on("data", (chunk) => {
+    downloaded += chunk.length;
+    if (downloaded > MAX_AUDIO_BYTES) {
+      response.data.destroy(new Error("El audio es demasiado grande para enviarlo directo."));
+    }
+  });
+
+  try {
+    await pipeline(response.data, outputStream);
+  } catch (error) {
+    deleteFileSafe(outputPath);
+    throw error;
+  }
+
+  if (!fs.existsSync(outputPath)) {
+    throw new Error("No se pudo guardar el audio temporal.");
+  }
+  const size = fs.statSync(outputPath).size;
+  if (!size || size < 1024) {
+    deleteFileSafe(outputPath);
+    throw new Error("El audio llego vacio o incompleto.");
+  }
+  if (size > MAX_AUDIO_BYTES) {
+    deleteFileSafe(outputPath);
+    throw new Error("El audio es demasiado grande para enviarlo directo.");
+  }
+
+  const format = detectAudioFormat(outputPath, path.extname(normalizedName).replace(".", "") || fallbackExt);
+  return {
+    filePath: outputPath,
+    size,
+    fileName: normalizeAudioFileName(normalizedName, safeName(title, "audio"), format.ext),
+    mimetype: format.mimetype,
+    format: format.ext.toUpperCase(),
+    isMp3: format.isMp3,
+  };
 }
 
-async function resolveVideo(rawInput, signal) {
-  const videoUrl = extractYouTubeUrl(rawInput);
-  if (videoUrl) {
-    return { videoUrl, title: "audio", thumbnail: null };
+async function convertAudioToMp3(inputPath, title, signal) {
+  ensureTmpDir();
+  const outputName = `${safeName(title, "audio")}.mp3`;
+  const outputPath = path.join(TMP_DIR, `${Date.now()}-${randomUUID()}-${outputName}`);
+
+  return new Promise((resolve) => {
+    const ffmpeg = spawn("ffmpeg", [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-y",
+      "-i",
+      inputPath,
+      "-vn",
+      "-c:a",
+      "libmp3lame",
+      "-b:a",
+      AUDIO_QUALITY,
+      "-ar",
+      "44100",
+      outputPath,
+    ]);
+
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onAbort);
+      resolve(value);
+    };
+    const onAbort = () => {
+      try {
+        ffmpeg.kill("SIGKILL");
+      } catch {}
+      deleteFileSafe(outputPath);
+      finish(null);
+    };
+    const timer = setTimeout(() => {
+      try {
+        ffmpeg.kill("SIGKILL");
+      } catch {}
+      deleteFileSafe(outputPath);
+      finish(null);
+    }, FFMPEG_TIMEOUT_MS);
+
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+    ffmpeg.on("error", () => {
+      deleteFileSafe(outputPath);
+      finish(null);
+    });
+    ffmpeg.on("close", (code) => {
+      if (code !== 0 || !fs.existsSync(outputPath)) {
+        deleteFileSafe(outputPath);
+        finish(null);
+        return;
+      }
+      const size = fs.statSync(outputPath).size;
+      if (!size) {
+        deleteFileSafe(outputPath);
+        finish(null);
+        return;
+      }
+      finish({
+        filePath: outputPath,
+        size,
+        fileName: outputName,
+        mimetype: "audio/mpeg",
+        format: "MP3",
+        isMp3: true,
+      });
+    });
+  });
+}
+
+async function prepareLocalAudio(mp3, signal) {
+  const sourceUrl = mp3.localFileUrl || mp3.downloadUrl;
+  const downloaded = await downloadAudioFile(sourceUrl, {
+    fileName: mp3.fileName,
+    title: mp3.title,
+    signal,
+  });
+  const cleanupPaths = [downloaded.filePath];
+  let finalAudio = downloaded;
+
+  if (!downloaded.isMp3) {
+    const converted = await convertAudioToMp3(downloaded.filePath, mp3.title, signal);
+    if (converted) {
+      cleanupPaths.push(converted.filePath);
+      finalAudio = converted;
+    }
   }
 
-  if (isHttpUrl(rawInput)) {
-    throw new Error("Enviame un link valido de YouTube.");
-  }
-
-  const query = String(rawInput || "").trim().toLowerCase();
-  const cacheKey = `ytsearch:${query}`;
-  const cached = readCache(cacheKey);
-  if (cached?.videoUrl) {
-    return cached;
-  }
-
-  const search = await apiGet(API_SEARCH_URL, { q: rawInput, limit: 1 }, signal);
-  const first = search?.results?.[0];
-  if (!first?.url) {
-    throw new Error("No encontre resultados para ese titulo.");
-  }
-
-  const result = {
-    videoUrl: String(first.url).trim(),
-    title: displayTitle(first.title || "audio"),
-    thumbnail: first.thumbnail || null,
+  return {
+    ...finalAudio,
+    cleanupPaths,
   };
-  writeCache(cacheKey, result);
-  return result;
 }
 
 async function resolveAudioCandidates(rawInput, signal) {
@@ -406,6 +617,7 @@ async function resolveMp3Link(videoUrl, signal, preferredTitle = "") {
   );
   const result = {
     downloadUrl,
+    localFileUrl: buildApiMp3FileUrl(videoUrl),
     title: displayTitle(payload?.title || preferredTitle || cleanedTitle, cleanedTitle),
     fileName: `${fileBase}.${extension}`,
     thumbnail: payload?.thumbnail || payload?.image || null,
@@ -464,83 +676,68 @@ function getCooldownRemaining(untilMs) {
   return Math.max(0, Math.ceil((untilMs - now()) / 1000));
 }
 
-async function sendAudioFast(sock, from, quoted, { downloadUrl, fileName, title, thumbnail, videoUrl, mimetype, quality, format, signal }) {
+async function sendAudioFast(sock, from, quoted, { downloadUrl, localFileUrl, fileName, title, thumbnail, videoUrl, mimetype, quality, format, signal }) {
   let lastError = null;
   const cleanTitle = displayTitle(title, "audio");
   const cleanQuality = quality || AUDIO_QUALITY;
-  const cleanFormat = format || "MP3";
-  const cleanMime = mimetype || "audio/mpeg";
   const metadata = buildMediaContext({
     title: cleanTitle,
-    body: `${cleanFormat} • ${cleanQuality} • DVYER`,
+    body: `MP3 • ${cleanQuality} • DVYER`,
     thumbnail,
     sourceUrl: videoUrl,
   });
-  try {
-    await sock.sendMessage(
-      from,
-      withChannelInfo({
-        audio: { url: downloadUrl },
-        mimetype: cleanMime,
-        ptt: false,
-        fileName,
-        title: cleanTitle,
-      }, metadata),
-      quoted
-    );
-    return;
-  } catch (error) {
-    lastError = error;
-  }
+
+  const prepared = await prepareLocalAudio({
+    downloadUrl,
+    localFileUrl,
+    fileName,
+    title: cleanTitle,
+    mimetype,
+    format,
+  }, signal);
+  const cleanFormat = prepared.format || format || "MP3";
+  const cleanMime = prepared.mimetype || mimetype || "audio/mpeg";
+  const cleanFileName = prepared.fileName || fileName || `${safeName(cleanTitle)}.mp3`;
+  const sendAsDocument = prepared.size > AUDIO_AS_DOCUMENT_THRESHOLD;
 
   try {
+    if (!sendAsDocument) {
+      try {
+        await sock.sendMessage(
+          from,
+          withChannelInfo({
+            audio: { url: prepared.filePath },
+            mimetype: cleanMime,
+            ptt: false,
+            fileName: cleanFileName,
+            title: cleanTitle,
+          }, metadata),
+          quoted
+        );
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
     await sock.sendMessage(
       from,
       withChannelInfo({
-        document: { url: downloadUrl },
+        document: { url: prepared.filePath },
         mimetype: cleanMime,
-        fileName,
+        fileName: cleanFileName,
         title: cleanTitle,
         caption: buildReadyCaption({ title: cleanTitle, quality: cleanQuality, format: cleanFormat }),
       }, metadata),
       quoted
-    );
-    return;
-  } catch (error) {
-    lastError = error;
+    ).catch(() => {
+      throw lastError || new Error("No se pudo enviar el audio.");
+    });
+  } finally {
+    for (const filePath of prepared.cleanupPaths || []) {
+      deleteFileSafe(filePath);
+    }
   }
-
-  const buffer = await fetchAudioBuffer(downloadUrl, signal);
-  try {
-    await sock.sendMessage(
-      from,
-      withChannelInfo({
-        audio: buffer,
-        mimetype: cleanMime,
-        ptt: false,
-        fileName,
-        title: cleanTitle,
-      }, metadata),
-      quoted
-    );
-    return;
-  } catch (error) {
-    lastError = error;
-  }
-
-  await sock.sendMessage(
-    from,
-    withChannelInfo({
-      document: buffer,
-      mimetype: cleanMime,
-      fileName,
-      title: cleanTitle,
-      caption: buildReadyCaption({ title: cleanTitle, quality: cleanQuality, format: cleanFormat }),
-    }, metadata),
-    quoted
-  ).catch(() => {
-    throw lastError || new Error("No se pudo enviar el audio.");
-  });
 }
 
 async function sendAudioWithFreshLink(sock, from, quoted, { videoUrl, initialMp3, fallbackTitle, thumbnail, signal }) {
@@ -551,6 +748,7 @@ async function sendAudioWithFreshLink(sock, from, quoted, { videoUrl, initialMp3
     try {
       await sendAudioFast(sock, from, quoted, {
         downloadUrl: mp3.downloadUrl,
+        localFileUrl: mp3.localFileUrl,
         fileName: mp3.fileName,
         title: mp3.title || fallbackTitle,
         thumbnail: mp3.thumbnail || thumbnail,
