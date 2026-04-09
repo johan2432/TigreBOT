@@ -5,6 +5,7 @@ import http from "http";
 import https from "https";
 import axios from "axios";
 import yts from "yt-search";
+import { spawn } from "child_process";
 import { pipeline } from "stream/promises";
 import { randomUUID } from "crypto";
 import { buildDvyerUrl } from "../../lib/api-manager.js";
@@ -16,6 +17,8 @@ const REQUEST_TIMEOUT = 12 * 60 * 1000;
 const MAX_AUDIO_BYTES = 800 * 1024 * 1024;
 const AUDIO_AS_DOCUMENT_THRESHOLD = 80 * 1024 * 1024;
 const MIN_AUDIO_BYTES = 20 * 1024;
+const COVER_MAX_BYTES = 8 * 1024 * 1024;
+const METADATA_TIMEOUT = 4 * 60 * 1000;
 const HTTP_AGENT = new http.Agent({ keepAlive: true });
 const HTTPS_AGENT = new https.Agent({ keepAlive: true });
 
@@ -124,6 +127,20 @@ function extractYouTubeUrl(text) {
   return match ? match[0].trim() : "";
 }
 
+function extractYouTubeId(value) {
+  const text = String(value || "");
+  const match = text.match(
+    /(?:youtu\.be\/|youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|live\/|embed\/))([a-zA-Z0-9_-]{11})/i
+  );
+  return match?.[1] || "";
+}
+
+function buildYoutubeCoverUrl(videoUrl, fallback = "") {
+  const videoId = extractYouTubeId(videoUrl);
+  if (videoId) return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+  return /^https?:\/\//i.test(fallback) ? fallback : "";
+}
+
 function parseContentDispositionFileName(headerValue) {
   const text = String(headerValue || "");
   const utfMatch = text.match(/filename\*=UTF-8''([^;]+)/i);
@@ -162,6 +179,7 @@ async function resolveInputToUrl(input) {
     return {
       url: directUrl,
       title: "YouTube MP3",
+      thumbnail: buildYoutubeCoverUrl(directUrl),
       searched: false,
     };
   }
@@ -180,6 +198,7 @@ async function resolveInputToUrl(input) {
     title: cleanText(video.title || "YouTube MP3"),
     duration: cleanText(video.timestamp || ""),
     author: cleanText(video.author?.name || video.author || ""),
+    thumbnail: buildYoutubeCoverUrl(video.url, video.thumbnail || ""),
     searched: true,
   };
 }
@@ -261,6 +280,141 @@ async function downloadYtmp3(videoUrl, preferredName) {
     size,
     contentType: response.headers?.["content-type"] || "audio/mpeg",
   };
+}
+
+function getMp3Title(resolved, downloaded) {
+  const resolvedTitle = cleanText(resolved?.title || "");
+  if (resolvedTitle && resolvedTitle.toLowerCase() !== "youtube mp3") return resolvedTitle;
+  return cleanText(path.parse(downloaded?.fileName || "").name || "YouTube MP3");
+}
+
+async function downloadCoverImage(coverUrl) {
+  if (!coverUrl) return null;
+
+  const response = await axios.get(coverUrl, {
+    responseType: "arraybuffer",
+    timeout: 30_000,
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/145 Safari/537.36",
+      Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    },
+    httpAgent: HTTP_AGENT,
+    httpsAgent: HTTPS_AGENT,
+    maxRedirects: 3,
+    validateStatus: () => true,
+  });
+
+  const contentType = String(response.headers?.["content-type"] || "");
+  if (response.status >= 400 || !contentType.startsWith("image/")) {
+    throw new Error(`cover HTTP ${response.status}`);
+  }
+
+  const buffer = Buffer.from(response.data || []);
+  if (!buffer.length) throw new Error("cover vacia");
+  if (buffer.length > COVER_MAX_BYTES) throw new Error("cover demasiado grande");
+
+  ensureTmpDir();
+  const coverPath = path.join(TMP_DIR, `${Date.now()}-${randomUUID()}-cover.jpg`);
+  fs.writeFileSync(coverPath, buffer);
+  return coverPath;
+}
+
+function runFfmpeg(args, timeoutMs = METADATA_TIMEOUT) {
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    let stderr = "";
+
+    const child = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+    const timer = setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      child.kill("SIGKILL");
+      reject(new Error("metadata timeout"));
+    }, timeoutMs);
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 4000) stderr = stderr.slice(-4000);
+    });
+
+    child.on("error", (error) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+
+    child.on("close", (code) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      if (code === 0) return resolve();
+      reject(new Error(stderr.trim() || `ffmpeg exited ${code}`));
+    });
+  });
+}
+
+async function writeMp3Metadata(downloaded, resolved) {
+  const title = getMp3Title(resolved, downloaded);
+  const coverUrl = buildYoutubeCoverUrl(resolved?.url, resolved?.thumbnail || "");
+  const outputPath = path.join(TMP_DIR, `${Date.now()}-${randomUUID()}-ytmp3-meta.mp3`);
+  let coverPath = null;
+
+  try {
+    try {
+      coverPath = await downloadCoverImage(coverUrl);
+    } catch (error) {
+      console.warn("YTMP3 cover skipped:", error?.message || error);
+    }
+
+    const args = ["-y", "-i", downloaded.tempPath];
+    if (coverPath) args.push("-i", coverPath);
+
+    args.push("-map", "0:a:0");
+    if (coverPath) args.push("-map", "1:v:0");
+
+    args.push("-c:a", "copy", "-id3v2_version", "3", "-metadata", `title=${title}`);
+
+    if (coverPath) {
+      args.push(
+        "-c:v",
+        "mjpeg",
+        "-metadata:s:v",
+        "title=Album cover",
+        "-metadata:s:v",
+        "comment=Cover (front)",
+        "-disposition:v:0",
+        "attached_pic"
+      );
+    }
+
+    args.push("-loglevel", "error", outputPath);
+
+    await runFfmpeg(args);
+
+    const size = fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
+    if (size < MIN_AUDIO_BYTES) throw new Error("metadata output invalido");
+
+    deleteFileSafe(downloaded.tempPath);
+    return {
+      ...downloaded,
+      tempPath: outputPath,
+      fileName: normalizeMp3Name(title),
+      size,
+      title,
+    };
+  } catch (error) {
+    deleteFileSafe(outputPath);
+    console.warn("YTMP3 metadata skipped:", error?.message || error);
+    return {
+      ...downloaded,
+      fileName: normalizeMp3Name(title || downloaded.fileName),
+      title,
+    };
+  } finally {
+    deleteFileSafe(coverPath);
+  }
 }
 
 async function sendMp3(sock, from, quoted, data) {
@@ -355,7 +509,7 @@ export default {
             resolved.duration ? `┃ ⏱ Duracion: ${resolved.duration}` : "┃ ⏱ Duracion: detectando",
             "┃ ⚡ Modo: descarga directa",
             "┃ ◈ Regla: audio hasta 80 MB",
-            "╰─⟡ Preparando MP3...",
+            "╰─⟡ Preparando MP3 con portada...",
           ].join("\n"),
           ...global.channelInfo,
         },
@@ -364,11 +518,10 @@ export default {
 
       const downloaded = await downloadYtmp3(resolved.url, resolved.title);
       tempPath = downloaded.tempPath;
+      const tagged = await writeMp3Metadata(downloaded, resolved);
+      tempPath = tagged.tempPath;
 
-      await sendMp3(sock, from, quoted, {
-        ...downloaded,
-        title: resolved.title,
-      });
+      await sendMp3(sock, from, quoted, tagged);
     } catch (error) {
       console.error("YTMP3 ERROR:", error?.message || error);
       refundDownloadCharge(ctx, downloadCharge, {
