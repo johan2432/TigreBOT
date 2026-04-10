@@ -103,7 +103,7 @@ function getMenuContext({ settings, botId = "", botLabel = "" }) {
 
   if (!normalizedBotId || normalizedBotId === "main") {
     return {
-      title: "FSOCIETY BOT PRINCIPAL",
+      title: "ŦIGŘ€Ş ₣ỮŘIØŞØŞ",
       botLine: settings?.botName || "Fsociety bot",
     };
   }
@@ -115,7 +115,7 @@ function getMenuContext({ settings, botId = "", botLabel = "" }) {
     `Fsociety Subbot ${slot || 1}`;
 
   return {
-    title: `MENU SUBBOT FSOCIETY ${slot || 1}`,
+    title: `MENU SUBBOT TigreBOT ${slot || 1}`,
     botLine: subbotName,
   };
 }
