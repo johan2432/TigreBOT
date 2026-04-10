@@ -60,6 +60,7 @@ function getCategorySortIndex(category = "") {
     "anime",
     "admin",
     "vip",
+    "post",
   ];
   const index = order.indexOf(normalizeCategoryKey(category));
   return index === -1 ? Number.MAX_SAFE_INTEGER : index;
@@ -84,6 +85,7 @@ function getCategoryIcon(category = "") {
     sistema: "⚙️",
     subbots: "🤖",
     vip: "💎",
+    post: "🐯",
   };
 
   return icons[key] || "✦";
