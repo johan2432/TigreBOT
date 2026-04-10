@@ -15,126 +15,126 @@
       "slot": 1,
       "enabled": true,
       "label": "SUBBOT1",
-      "name": "Fsociety Subbot 1",
-      "authFolder": "dvyer-session-subbot",
+      "name": "TigreBOT Subbot 1",
+      "authFolder": "johan-session-subbot",
       "pairingNumber": ""
     },
     {
       "slot": 2,
       "enabled": false,
       "label": "SUBBOT2",
-      "name": "Fsociety Subbot 2",
-      "authFolder": "dvyer-session-subbot-2",
+      "name": "TigreBOT Subbot 2",
+      "authFolder": "johan-session-subbot-2",
       "pairingNumber": ""
     },
     {
       "slot": 3,
       "enabled": false,
       "label": "SUBBOT3",
-      "name": "Fsociety Subbot 3",
-      "authFolder": "dvyer-session-subbot-3",
+      "name": "TigreBOT Subbot 3",
+      "authFolder": "johan-session-subbot-3",
       "pairingNumber": ""
     },
     {
       "slot": 4,
       "enabled": false,
       "label": "SUBBOT4",
-      "name": "Fsociety Subbot 4",
-      "authFolder": "dvyer-session-subbot-4",
+      "name": "TigreBOT Subbot 4",
+      "authFolder": "johan-session-subbot-4",
       "pairingNumber": ""
     },
     {
       "slot": 5,
       "enabled": false,
       "label": "SUBBOT5",
-      "name": "Fsociety Subbot 5",
-      "authFolder": "dvyer-session-subbot-5",
+      "name": "TigreBOT Subbot 5",
+      "authFolder": "johan-session-subbot-5",
       "pairingNumber": ""
     },
     {
       "slot": 6,
       "enabled": false,
       "label": "SUBBOT6",
-      "name": "Fsociety Subbot 6",
-      "authFolder": "dvyer-session-subbot-6",
+      "name": "TigreBOT Subbot 6",
+      "authFolder": "johan-session-subbot-6",
       "pairingNumber": ""
     },
     {
       "slot": 7,
       "enabled": false,
       "label": "SUBBOT7",
-      "name": "Fsociety Subbot 7",
-      "authFolder": "dvyer-session-subbot-7",
+      "name": "TigreBOT Subbot 7",
+      "authFolder": "johan-session-subbot-7",
       "pairingNumber": ""
     },
     {
       "slot": 8,
       "enabled": false,
       "label": "SUBBOT8",
-      "name": "Fsociety Subbot 8",
-      "authFolder": "dvyer-session-subbot-8",
+      "name": "TigreBOT Subbot 8",
+      "authFolder": "johan-session-subbot-8",
       "pairingNumber": ""
     },
     {
       "slot": 9,
       "enabled": false,
       "label": "SUBBOT9",
-      "name": "Fsociety Subbot 9",
-      "authFolder": "dvyer-session-subbot-9",
+      "name": "TigreBOT Subbot 9",
+      "authFolder": "johan-session-subbot-9",
       "pairingNumber": ""
     },
     {
       "slot": 10,
       "enabled": false,
       "label": "SUBBOT10",
-      "name": "Fsociety Subbot 10",
-      "authFolder": "dvyer-session-subbot-10",
+      "name": "TigreBOT Subbot 10",
+      "authFolder": "johan-session-subbot-10",
       "pairingNumber": ""
     },
     {
       "slot": 11,
       "enabled": false,
       "label": "SUBBOT11",
-      "name": "Fsociety Subbot 11",
-      "authFolder": "dvyer-session-subbot-11",
+      "name": "TigreBOT Subbot 11",
+      "authFolder": "johan-session-subbot-11",
       "pairingNumber": ""
     },
     {
       "slot": 12,
       "enabled": false,
       "label": "SUBBOT12",
-      "name": "Fsociety Subbot 12",
-      "authFolder": "dvyer-session-subbot-12",
+      "name": "TigreBOT Subbot 12",
+      "authFolder": "johan-session-subbot-12",
       "pairingNumber": ""
     },
     {
       "slot": 13,
       "enabled": false,
       "label": "SUBBOT13",
-      "name": "Fsociety Subbot 13",
-      "authFolder": "dvyer-session-subbot-13",
+      "name": "TigreBOT Subbot 13",
+      "authFolder": "johan-session-subbot-13",
       "pairingNumber": ""
     },
     {
       "slot": 14,
       "enabled": false,
       "label": "SUBBOT14",
-      "name": "Fsociety Subbot 14",
-      "authFolder": "dvyer-session-subbot-14",
+      "name": "TigreBOT Subbot 14",
+      "authFolder": "johan-session-subbot-14",
       "pairingNumber": ""
     },
     {
       "slot": 15,
       "enabled": false,
       "label": "SUBBOT15",
-      "name": "Fsociety Subbot 15",
-      "authFolder": "dvyer-session-subbot-15",
+      "name": "TigreBOT Subbot 15",
+      "authFolder": "johan-session-subbot-15",
       "pairingNumber": ""
     }
   ],
   "system": {
     "autoProfileOnConnect": true,
-    "mainBotBio": "Ya conectado bot Fsociety",
+    "mainBotBio": "Ya conectado bot TigreBOT",
     "mainBotPhoto": "assets/profile/fsociety-bot-profile",
     "subbotBioTemplate": "Subbot Fsociety activo",
     "subbotPhoto": "",
@@ -147,6 +147,6 @@
   "newsletter": {
     "enabled": true,
     "jid": "120363354701957370@newsletter",
-    "name": "Fsociety bot"
+    "name": "TigreBOT"
   }
 }
