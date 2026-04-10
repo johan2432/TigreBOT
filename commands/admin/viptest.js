@@ -15,7 +15,7 @@ export default {
           ? "⏳ Tu VIP ya venció."
           : res.reason === "limit"
           ? "🎟️ Ya no tienes usos VIP."
-          : "🔒 Este comando es VIP. Pídele permiso al owner.";
+          : "🔒 Este comando es VIP. Pídele permiso a johan.";
       return sock.sendMessage(from, { text: t }, { quoted: msg });
     }
 
